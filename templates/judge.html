@@ -1,0 +1,92 @@
+ <!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Судья {{ judge.name }}</title>
+    <link href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-5">
+        <h1>Судья: {{ judge.name }}</h1>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div class="alert alert-success">
+                    {{ messages[0] }}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <form method="POST" action="{{ url_for('submit_score', judge_id=judge.id) }}">
+            <div class="mb-3">
+                <label for="pair_id" class="form-label">Выберите пару</label>
+                <select class="form-control" id="pair_id" name="pair_id" required>
+                    {% for p in pairs %}
+                        <option value="{{ p.id }}">{{ p.tori.name }} (Тори) - {{ p.uke.name }} (Уке)</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="mb-3">
+                <label for="judge_position" class="form-label">Позиция судьи (1-5)</label>
+                <input type="number" class="form-control" id="judge_position" name="judge_position" min="1" max="5" required>
+            </div>
+
+            <h3>Оценки по техникам</h3>
+            {% for i in range(1, 18) %}
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h5>Техника {{ i }}</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="tech{{ i }}_minor1" name="tech{{ i }}_minor1">
+                                    <label class="form-check-label" for="tech{{ i }}_minor1">Малая ошибка 1 (-1)</label>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="tech{{ i }}_minor2" name="tech{{ i }}_minor2">
+                                    <label class="form-check-label" for="tech{{ i }}_minor2">Малая ошибка 2 (-1)</label>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="tech{{ i }}_medium" name="tech{{ i }}_medium">
+                                    <label class="form-check-label" for="tech{{ i }}_medium">Средняя ошибка (-3)</label>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="tech{{ i }}_big" name="tech{{ i }}_big">
+                                    <label class="form-check-label" for="tech{{ i }}_big">Большая ошибка (-5)</label>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="tech{{ i }}_plus05" name="tech{{ i }}_plus05">
+                                    <label class="form-check-label" for="tech{{ i }}_plus05">Корректировка +0.5</label>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="tech{{ i }}_minus05" name="tech{{ i }}_minus05">
+                                    <label class="form-check-label" for="tech{{ i }}_minus05">Корректировка -0.5</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-check mt-2">
+                            <input class="form-check-input" type="checkbox" id="tech{{ i }}_forgotten" name="tech{{ i }}_forgotten">
+                            <label class="form-check-label" for="tech{{ i }}_forgotten">Забытая техника</label>
+                        </div>
+                    </div>
+                </div>
+            {% endfor %}
+
+            <button type="submit" class="btn btn-primary">Отправить оценку</button>
+        </form>
+    </div>
+    <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
+</body>
+</html>
