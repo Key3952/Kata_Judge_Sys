@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}Публичная Панель{% endblock %}
+
+{% block extra_css %}
+<style>
+    .competition-card {
+        margin-bottom: 2rem;
+    }
+
+    .discipline-buttons {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .discipline-btn {
+        flex: 1;
+        min-width: 150px;
+        padding: 0.75rem 1rem;
+        text-align: center;
+        background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+        color: white;
+        border: none;
+        text-decoration: none;
+        transition: all 0.3s ease;
+        font-size: 0.9rem;
+    }
+
+    .discipline-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    }
+
+    .tablo-link {
+        background: linear-gradient(135deg, #6c757d 0%, #5a6268 100%);
+    }
+
+    .discipline-btn small {
+        display: block;
+        font-size: 0.8rem;
+        opacity: 0.9;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <h1 class="text-white">⚖️ Система Судейства Дзюдо Ката</h1>
+        <p class="text-white">Публичный доступ для судей и табло</p>
+    </div>
+</div>
+
+{% if competitions %}
+<div class="row">
+    {% for comp in competitions %}
+    <div class="col-lg-10 offset-lg-1">
+        <div class="card competition-card">
+            <div class="card-header">
+                <h5 class="mb-0">🏆 {{ comp.display_name }}</h5>
+            </div>
+            <div class="card-body">
+                <h6 class="mb-3">Дисциплины:</h6>
+                {% for disc in comp.disciplines %}
+                <div class="discipline-buttons mb-2">
+                    <a href="{{ url_for('judge_page', comp_name=comp.name, kata_key=disc.key) }}"
+                       class="discipline-btn">
+                        ⚖️ {{ disc.name }}
+                        <small>Форма судьи</small>
+                    </a>
+                    <a href="{{ url_for('tablo', comp_name=comp.name, kata_key=disc.key) }}"
+                       class="discipline-btn tablo-link">
+                        📊 {{ disc.name }}
+                        <small>Табло</small>
+                    </a>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="row">
+    <div class="col-md-8 offset-md-2">
+        <div class="card">
+            <div class="card-body text-center p-5">
+                <h3>📭 Активных соревнований нет</h3>
+                <p>Пожалуйста, обратитесь к администратору для создания соревнования.</p>
+                <a href="{{ url_for('admin_login') }}" class="btn btn-primary mt-3">
+                    🔐 Админ-панель
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="row mt-4">
+    <div class="col-12 text-center">
+        <a href="{{ url_for('admin_login') }}" class="btn btn-outline-dark">
+            🔐 Вход в Админ-панель
+        </a>
+    </div>
+</div>
+{% endblock %}
+

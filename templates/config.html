@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Создание Соревнования{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h4 class="mb-0">➕ Создание Нового Соревнования</h4>
+            </div>
+            <div class="card-body p-5">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="comp_name" class="form-label">📝 Название Соревнования:</label>
+                        <input type="text" id="comp_name" name="comp_name" class="form-control form-control-lg"
+                               placeholder="Первенство..." required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="comp_path" class="form-label">📁 Путь для Сохранения:</label>
+                        <input type="text" id="comp_path" name="comp_path" class="form-control form-control-lg"
+                               value="{{ default_path }}" placeholder="/path/to/competitions">
+                        <small class="text-muted">По умолчанию: {{ default_path }}</small>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="banner" class="form-label">🎨 Баннер (URL изображения):</label>
+                        <input type="url" id="banner" name="banner" class="form-control form-control-lg"
+                               placeholder="https://example.com/banner.png">
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-accent btn-lg">
+                            ✅ Создать Соревнование
+                        </button>
+                        <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary btn-lg">
+                            ❌ Отмена
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

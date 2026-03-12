@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Система судейства Дзюдо Ката{% endblock %}</title>
+    <link href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}" rel="stylesheet">
+    <style>
+        :root {
+            /* Default theme variables */
+            --bg-main: linear-gradient(135deg, #1a3d5c 0%, #2d5a7b 100%);
+            --bg-card: #ffffff;
+            --text-primary: #333333;
+            --text-muted: #666666;
+            --accent-color: #d4af37;
+            --nav-bg: #1a3d5c;
+            --card-border: #e0e0e0;
+            --hover-bg: #f0f0f0;
+            --alert-danger-bg: #f8d7da;
+            --alert-danger-text: #721c24;
+            --alert-success-bg: #d4edda;
+            --alert-success-text: #155724;
+        }
+
+        /* Theme overrides */
+        body.theme-high-contrast-dark {
+            --bg-main: #000000;
+            --bg-card: #1a1a1a;
+            --text-primary: #ffffff;
+            --text-muted: #cccccc;
+            --accent-color: #ffffff;
+            --nav-bg: #000000;
+            --card-border: #333333;
+            --hover-bg: #2a2a2a;
+            --alert-danger-bg: #4a0000;
+            --alert-danger-text: #ff6666;
+            --alert-success-bg: #004a00;
+            --alert-success-text: #66ff66;
+        }
+
+        body.theme-clean-light {
+            --bg-main: #ffffff;
+            --bg-card: #f8f9fa;
+            --text-primary: #000000;
+            --text-muted: #6c757d;
+            --accent-color: #212529;
+            --nav-bg: #ffffff;
+            --card-border: #dee2e6;
+            --hover-bg: #e9ecef;
+            --alert-danger-bg: #f8d7da;
+            --alert-danger-text: #721c24;
+            --alert-success-bg: #d4edda;
+            --alert-success-text: #155724;
+        }
+
+        body.theme-natural-green {
+            --bg-main: linear-gradient(135deg, #7a9460 0%, #556b2f 100%);
+            --bg-card: rgba(255, 255, 255, 0.1);
+            --text-primary: #ffffff;
+            --text-muted: #e8f5e9;
+            --accent-color: #8bc34a;
+            --nav-bg: #33691e;
+            --card-border: rgba(255, 255, 255, 0.2);
+            --hover-bg: rgba(255, 255, 255, 0.05);
+            --alert-danger-bg: rgba(244, 67, 54, 0.8);
+            --alert-danger-text: #ffffff;
+            --alert-success-bg: rgba(76, 175, 80, 0.8);
+            --alert-success-text: #ffffff;
+        }
+
+        body.theme-deep-midnight {
+            --bg-main: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            --bg-card: rgba(255, 255, 255, 0.05);
+            --text-primary: #e0e0e0;
+            --text-muted: #b0b0b0;
+            --accent-color: #00d2ff;
+            --nav-bg: #0f0c29;
+            --card-border: rgba(0, 210, 255, 0.3);
+            --hover-bg: rgba(255, 255, 255, 0.1);
+            --alert-danger-bg: rgba(244, 67, 54, 0.8);
+            --alert-danger-text: #ffffff;
+            --alert-success-bg: rgba(76, 175, 80, 0.8);
+            --alert-success-text: #ffffff;
+        }
+
+        * {
+            border-radius: 8px !important;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: var(--bg-main);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .navbar {
+            background: var(--nav-bg);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .navbar-brand {
+            font-weight: bold;
+            color: var(--accent-color) !important;
+            font-size: 1.5rem;
+        }
+
+        .btn-primary {
+            background: var(--accent-color);
+            border: none;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-color);
+            opacity: 0.8;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn-accent {
+            background: var(--accent-color);
+            color: var(--text-primary);
+            border: none;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .btn-accent:hover {
+            background: var(--accent-color);
+            opacity: 0.8;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--card-border);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .card:hover {
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+        }
+
+        .card-header {
+            background: var(--nav-bg);
+            color: var(--text-primary);
+            border: none;
+        }
+
+        .container-main {
+            width: 100%;
+            padding: 2rem;
+            max-width: 1400px;
+            margin: 0 auto;
+            flex: 1;
+        }
+
+        .text-accent {
+            color: var(--accent-color);
+        }
+
+        .badge-primary {
+            background: var(--accent-color);
+        }
+
+        .form-control, .form-select {
+            border: 1px solid var(--card-border);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+
+        .form-control:focus, .form-select:focus {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 0.2rem rgba(212, 175, 55, 0.25);
+        }
+
+        .alert {
+            border: none;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .alert-danger {
+            background: var(--alert-danger-bg);
+            color: var(--alert-danger-text);
+        }
+
+        .alert-success {
+            background: var(--alert-success-bg);
+            color: var(--alert-success-text);
+        }
+
+        table {
+            margin-top: 0;
+        }
+
+        table thead {
+            background: var(--nav-bg);
+            color: var(--text-primary);
+        }
+
+        table tbody tr {
+            transition: all 0.2s ease;
+            background: var(--bg-card);
+            color: var(--text-primary);
+        }
+
+        table tbody tr:hover {
+            background: var(--hover-bg);
+        }
+
+        .nav-link {
+            color: var(--text-primary) !important;
+            transition: all 0.3s ease;
+        }
+
+        .nav-link:hover {
+            color: var(--accent-color) !important;
+        }
+
+        footer {
+            background: var(--nav-bg);
+            color: var(--text-primary);
+            text-align: center;
+            padding: 1rem;
+            font-size: 0.9rem;
+            margin-top: auto;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    {% if session.get('admin') %}
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">⚔️ Дзюдо Ката Судейство</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <div class="ms-auto d-flex align-items-center">
+                    <select id="theme-switcher" class="form-select form-select-sm me-3" style="width: auto; background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--card-border);">
+                        <option value="default">Классический синий</option>
+                        <option value="high-contrast-dark">Черно-белый</option>
+                        <option value="clean-light">Бело-черный</option>
+                        <option value="natural-green">Фисташковый</option>
+                        <option value="deep-midnight">Полночь</option>
+                    </select>
+                    <a class="nav-link" href="{{ url_for('admin_dashboard') }}">Админ-панель</a>
+                    <a class="nav-link" href="{{ url_for('admin_logout') }}">Выход</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+    {% endif %}
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ 'danger' if category == 'danger' else 'success' }} alert-dismissible fade show m-3" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="container-main">
+        {% block content %}{% endblock %}
+    </div>
+
+    <footer>
+        © 2026 Система судейства Дзюдо Ката. Все права защищены.
+    </footer>
+
+    <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
+    <script>
+        // Theme switcher functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const themeSwitcher = document.getElementById('theme-switcher');
+            if (!themeSwitcher) return;
+
+            // Load saved theme
+            const savedTheme = localStorage.getItem('selected-theme') || 'default';
+            applyTheme(savedTheme);
+            themeSwitcher.value = savedTheme;
+
+            // Handle theme change
+            themeSwitcher.addEventListener('change', function() {
+                const selectedTheme = this.value;
+                applyTheme(selectedTheme);
+                localStorage.setItem('selected-theme', selectedTheme);
+            });
+        });
+
+        function applyTheme(theme) {
+            // Remove all theme classes
+            document.body.className = document.body.className.replace(/\btheme-\w+/g, '').trim();
+
+            // Apply new theme if not default
+            if (theme !== 'default') {
+                document.body.classList.add('theme-' + theme);
+            }
+        }
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
+

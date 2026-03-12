@@ -1,0 +1,374 @@
+{% extends "base.html" %}
+
+{% block title %}Судейская Форма - {{ kata_name }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    :root {
+        --dark-bg: #2c3e50;
+        --accent-color: #3498db;
+    }
+
+    .scoring-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--bg-card);
+    }
+
+    .scoring-table thead {
+        background: var(--dark-bg);
+        color: white;
+    }
+
+    .scoring-table th, .scoring-table td {
+        padding: 0.6rem;
+        text-align: center;
+        border: 1px solid #dee2e6;
+        vertical-align: middle;
+    }
+
+    .tech-name {
+        text-align: left !important;
+        font-weight: 600;
+        font-size: 0.9rem;
+        background: #f8f9fa;
+    }
+
+    .penalty-cell {
+        display: flex;
+        gap: 4px;
+        justify-content: center;
+        align-items: center;
+        min-height: 45px;
+    }
+
+    .penalty-btn {
+        padding: 6px 10px;
+        border: 1px solid #ced4da;
+        background: #fff;
+        cursor: pointer;
+        font-size: 0.8rem;
+        border-radius: 4px;
+        transition: all 0.2s;
+        font-weight: bold;
+        color: #495057;
+    }
+
+    .penalty-btn:hover { background: #e9ecef; }
+
+    .penalty-btn.active {
+        background: var(--accent-color);
+        color: white;
+        border-color: var(--accent-color);
+        opacity: 0.8;
+    }
+
+    /* Стиль для корректировочных кнопок (синие при активации) */
+    .penalty-btn.active.correct {
+        background: var(--accent-color);
+        border-color: var(--accent-color);
+        opacity: 0.6;
+    }
+
+    .score-cell {
+        background: #fff3cd;
+        font-size: 1.1rem;
+        font-weight: bold;
+        color: #856404;
+    }
+
+    .total-row {
+        background: var(--dark-bg);
+        color: white;
+        font-weight: bold;
+    }
+
+    .forgotten-checkbox {
+        width: 24px;
+        height: 24px;
+        accent-color: #e74c3c;
+    }
+
+    .header-section {
+        background: var(--bg-card);
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+
+    .form-label { font-weight: bold; color: var(--dark-bg); }
+
+    @media (max-width: 768px) {
+        .scoring-table { font-size: 0.75rem; }
+        .penalty-btn { padding: 4px 6px; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h2 class="text-white fw-bold">⚖️ Судейский протокол</h2>
+    <p class="text-white-50">{{ comp_name }} | {{ kata_name }}</p>
+</div>
+
+<form id="judgeForm">
+    <div class="header-section">
+        <div class="row g-3">
+            <div class="col-md-4">
+                <label class="form-label">👤 Судья:</label>
+                <select id="judge_name" class="form-select form-select-lg" required>
+                    <option value="">-- Выберите ФИО --</option>
+                    {% for judge in judges %}
+                    <option value="{{ judge['ФИО'] }}">{{ judge['ФИО'] }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">🏆 Место:</label>
+                <select id="judge_position" class="form-select form-select-lg" required>
+                    <option value="">-- № Места --</option>
+                    {% for i in range(1, 6) %}<option value="{{ i }}">Место {{ i }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">👥 Пара:</label>
+                <select id="pair_number" class="form-select form-select-lg" required>
+                    <option value="">-- № Пары --</option>
+                    {% for pair in pairs %}
+                    <option value="{{ pair['номер пары'] }}">Пара {{ pair['номер пары'] }}: {{ pair['Тори_ФИО'] }} - {{ pair['Уке_ФИО'] }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <div class="card shadow border-0" id="scoringContainer" style="display: none;">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="scoring-table">
+                    <thead>
+                        <tr>
+                            <th style="min-width: 180px;">Техника</th>
+                            <th>Малая (-1)</th>
+                            <th>Средняя (-3)</th>
+                            <th>Большая (-5)</th>
+                            <th>Коррект. (±0.5)</th>
+                            <th>Забытая (-10)</th>
+                            <th>Сумма</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for tech in techniques %}
+                        <tr data-tech-index="{{ loop.index0 }}">
+                            <td class="tech-name">{{ tech }}</td>
+
+                            <td>
+                                <div class="penalty-cell">
+                                    <button type="button" class="penalty-btn" data-val="1" onclick="tgl(this, 'm1')">-1</button>
+                                    <button type="button" class="penalty-btn" data-val="1" onclick="tgl(this, 'm2')">-1</button>
+                                </div>
+                            </td>
+
+                            <td><button type="button" class="penalty-btn" data-val="3" onclick="tgl(this, 'med')">-3</button></td>
+
+                            <td><button type="button" class="penalty-btn" data-val="5" onclick="tgl(this, 'big')">-5</button></td>
+
+                            <td>
+                                <div class="penalty-cell">
+                                    <button type="button" class="penalty-btn correct" data-val="-0.5" onclick="tgl(this, 'c_plus')">+0.5</button>
+                                    <button type="button" class="penalty-btn correct" data-val="0.5" onclick="tgl(this, 'c_minus')">-0.5</button>
+                                </div>
+                            </td>
+
+                            <td>
+                                <input type="checkbox" class="forgotten-checkbox" onchange="calc()">
+                            </td>
+
+                            <td class="score-cell">10.0</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                    <tfoot>
+                        <tr class="total-row">
+                            <td colspan="6" class="text-end p-3">ИТОГОВЫЙ БАЛЛ ПАРЫ:</td>
+                            <td id="finalScore" class="text-center" style="font-size: 1.5rem;">0.0</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-4 mb-5 d-flex gap-3">
+        <button type="button" class="btn btn-success btn-lg shadow flex-grow-1" onclick="forceSave()">💾 Завершить оценивание</button>
+        <a href="/" class="btn btn-outline-light btn-lg">Выход</a>
+    </div>
+</form>
+
+<script>
+const pairs_data = {{ pairs | tojson }};
+const techniques = {{ techniques | tojson }};
+</script>
+
+<script>
+let state = {
+    techniques: []
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Инициализируем данные для каждой техники
+    document.querySelectorAll('tbody tr').forEach(tr => {
+        state.techniques.push({
+            m1: 0, m2: 0, med: 0, big: 0, c_plus: 0, c_minus: 0, forgotten: false
+        });
+    });
+
+    const inputs = ['judge_name', 'judge_position', 'pair_number'];
+    inputs.forEach(id => document.getElementById(id).addEventListener('change', toggleUI));
+});
+
+function toggleUI() {
+    const show = ['judge_name', 'judge_position', 'pair_number'].every(id => document.getElementById(id).value !== "");
+    document.getElementById('scoringContainer').style.display = show ? 'block' : 'none';
+    if (show) {
+        calc();
+        loadExistingScores();
+    }
+}
+
+function tgl(btn, key) {
+    const row = btn.closest('tr');
+    const idx = row.dataset.techIndex;
+
+    btn.classList.toggle('active');
+    const isActive = btn.classList.contains('active');
+
+    // Сохраняем значение: если активно - берем штраф из data-val, если нет - 0
+    state.techniques[idx][key] = isActive ? parseFloat(btn.dataset.val) : 0;
+
+    calc();
+}
+
+function calc() {
+    let totalAll = 0;
+    let hasForgotten = false;
+
+    document.querySelectorAll('tbody tr').forEach((tr, idx) => {
+        const t = state.techniques[idx];
+        const cb = tr.querySelector('.forgotten-checkbox');
+        t.forgotten = cb.checked;
+
+        let rowScore = 10.0;
+
+        if (t.forgotten) {
+            rowScore = 0;
+            hasForgotten = true;
+        } else {
+            // Вычитаем все активные штрафы
+            rowScore -= (t.m1 + t.m2 + t.med + t.big + t.c_minus);
+            // Прибавляем коррекцию плюс (в стейте она со знаком минус для удобства вычитания, поэтому тут вычитаем)
+            rowScore -= t.c_plus;
+        }
+
+        rowScore = Math.max(0, Math.min(10, rowScore));
+        tr.querySelector('.score-cell').textContent = rowScore.toFixed(1);
+        totalAll += rowScore;
+    });
+
+    // Правило: Если была хоть одна забытая техника, итоговая сумма / 2
+    if (hasForgotten) {
+        totalAll = totalAll / 2;
+    }
+
+    document.getElementById('finalScore').textContent = totalAll.toFixed(1);
+    saveScores().catch(e => console.log('Auto-save failed:', e)); // Отправка на сервер при каждом изменении
+}
+
+async function saveScores(isFinal = false) {
+    const data = {
+        judge: document.getElementById('judge_name').value,
+        pos: document.getElementById('judge_position').value,
+        pair: document.getElementById('pair_number').value,
+        details: state.techniques,
+        total: document.getElementById('finalScore').textContent,
+        isFinal: isFinal
+    };
+
+    if (!data.judge || !data.pair) return;
+
+    const selectedPair = pairs_data.find(p => p['номер пары'] == data.pair);
+    if (selectedPair) {
+        data.tori = selectedPair['Тори_ФИО'];
+        data.uke = selectedPair['Уке_ФИО'];
+    }
+
+    try {
+        const response = await fetch(`/api/{{ comp_name }}/{{ kata_key }}/save-judge-action`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        return await response.json();
+    } catch (e) {
+        console.error('Error saving scores:', e);
+    }
+}
+
+async function forceSave() {
+    const judge = document.getElementById('judge_name').value;
+    const pos = document.getElementById('judge_position').value;
+    const pair = document.getElementById('pair_number').value;
+
+    if (!judge || !pos || !pair) {
+        alert("Заполните все поля: судья, место, пара");
+        return;
+    }
+
+    const result = await saveScores(true);
+    if (result && result.success) {
+        alert("Оценки успешно сохранены и итог обновлен в финальном протоколе.");
+        window.location.reload();
+    } else {
+        alert("Ошибка при сохранении оценок.");
+    }
+}
+
+function loadExistingScores() {
+    const judge = document.getElementById('judge_name').value;
+    const pos = document.getElementById('judge_position').value;
+    const pair = document.getElementById('pair_number').value;
+    const selectedPair = pairs_data.find(p => p['номер пары'] == pair);
+    if (selectedPair) {
+        const tori = selectedPair['Тори_ФИО'];
+        const uke = selectedPair['Уке_ФИО'];
+        fetch(`/api/{{ comp_name }}/{{ kata_key }}/get-judge-scores/${judge}/${pos}/${tori}/${uke}`)
+            .then(r => r.json())
+            .then(details => {
+                if (Object.keys(details).length > 0) {
+                    // Apply details to state and UI
+                    document.querySelectorAll('tbody tr').forEach((tr, idx) => {
+                        const tech = techniques[idx];
+                        const detail = details[tech] || {};
+                        state.techniques[idx] = detail;
+
+                        // Update checkboxes
+                        const forgottenCb = tr.querySelector('.forgotten-checkbox');
+                        forgottenCb.checked = detail.forgotten || false;
+
+                        // Update buttons
+                        const buttons = tr.querySelectorAll('.penalty-btn');
+                        buttons.forEach(btn => {
+                            const key = btn.getAttribute('onclick').match(/tgl\(this, '(\w+)'\)/)[1];
+                            const isActive = detail[key] > 0;
+                            btn.classList.toggle('active', isActive);
+                        });
+                    });
+                    calc(); // Recalc total
+                }
+            })
+            .catch(e => console.log('No existing scores'));
+    }
+}
+</script>
+{% endblock %}

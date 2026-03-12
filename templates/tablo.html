@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}Табло - {{ kata_name }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .results-table {
+        overflow-x: auto;
+    }
+
+    table th {
+        background: var(--nav-bg);
+        color: var(--text-primary);
+        font-weight: bold;
+        padding: 0.75rem;
+    }
+
+    table td {
+        padding: 0.75rem;
+        border-bottom: 1px solid var(--card-border);
+        color: var(--text-primary);
+    }
+
+    table tbody tr:nth-child(odd) {
+        background: var(--hover-bg);
+    }
+
+    table tbody tr:hover {
+        background: var(--hover-bg);
+    }
+
+    .place-1 {
+        background: #fffde7 !important;
+    }
+
+    .place-2 {
+        background: #f0f0f0 !important;
+    }
+
+    .place-3 {
+        background: #f5ead1 !important;
+    }
+
+    .medal {
+        font-size: 1.2rem;
+        margin-right: 0.5rem;
+    }
+
+    .judge-score {
+        text-align: center;
+        font-weight: bold;
+        min-width: 60px;
+    }
+
+    .judge-score.complete {
+        color: #155724;
+    }
+
+    .judge-score.incomplete {
+        color: #856404;
+    }
+
+    .final-score {
+        font-size: 1.1rem;
+        font-weight: bold;
+        color: var(--primary);
+        text-align: center;
+    }
+
+    .place {
+        text-align: center;
+        font-weight: bold;
+        font-size: 1.1rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-12">
+        <h2>📊 Финальный протокол - {{ kata_name }}</h2>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Итоговые результаты</h5>
+            </div>
+            <div class="card-body results-table p-0">
+                {% if results %}
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width: 60px;">Место</th>
+                            <th style="width: 60px;">Пара</th>
+                            <th>Тори</th>
+                            <th>Уке</th>
+                            {% for judge in judges %}
+                            <th style="text-align: center;">Судья {{ judge['место'] }}</th>
+                            {% endfor %}
+                            <th style="text-align: center; width: 70px;">Сумма</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for result in results %}
+                        <tr class="{% if result.place == 1 %}place-1{% elif result.place == 2 %}place-2{% elif result.place == 3 %}place-3{% endif %}">
+                            <td class="place">
+                                {% if result.place == 1 %}
+                                🥇
+                                {% elif result.place == 2 %}
+                                🥈
+                                {% elif result.place == 3 %}
+                                🥉
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td><strong>#{{ result.pair_number }}</strong></td>
+                            <td>{{ result.tori }}</td>
+                            <td>{{ result.uke }}</td>
+
+                            {% for score in result.judge_scores %}
+                            <td class="judge-score {% if score is not none %}complete{% else %}incomplete{% endif %}">
+                                {% if score is not none %}
+                                    {{ "%.1f"|format(score) }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                            {% endfor %}
+
+                            <td class="final-score">
+                                {% if result.final_score is not none %}
+                                    {{ "%.1f"|format(result.final_score) }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <div style="padding: 2rem; text-align: center; color: #666;">
+                    Результаты еще не доступны
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Автоматическое обновление каждые 5 секунд без перезагрузки
+setInterval(() => {
+    fetch(window.location.href)
+        .then(r => r.text())
+        .then(html => {
+            const parser = new DOMParser();
+            const newDoc = parser.parseFromString(html, 'text/html');
+            const newCardBody = newDoc.querySelector('.card-body');
+            const oldCardBody = document.querySelector('.card-body');
+
+            if (newCardBody && oldCardBody) {
+                oldCardBody.parentElement.replaceChild(newCardBody, oldCardBody);
+            }
+        })
+        .catch(e => console.log('Не удалось обновить'));
+}, 5000);
+</script>
+{% endblock %}

@@ -1,0 +1,173 @@
+# technics.py
+
+ROW_NAMES_NAGE_NO_KATA = [
+    "Этикет начала",
+    "Uki-otoshi",
+    "Seoi-nage",
+    "Kata-guruma",
+    "Uki-goshi",
+    "Harai-goshi",
+    "Tsurikomi-goshi",
+    "Okuri-ashi-harai",
+    "Sasae-tsurikomi-ashi",
+    "Uchi-mata",
+    "Tomoe-nage",
+    "Ura-nage",
+    "Sumi-gaeshi",
+    "Yoko-gake",
+    "Yoko-guruma",
+    "Uki-waza",
+    "Этикет окончания",
+]
+
+ROW_NAMES_KATAME_NO_KATA = [
+    "Этикет начала",
+    "Kesa-gatame",
+    "Kata-gatame",
+    "Kami-shiho-gatame",
+    "Yoko-shiho-gatame",
+    "Kuzure-kami-shiho-gatame",
+    "Kata-juji-jime",
+    "Hadaka-jime",
+    "Okuri-eri-jime",
+    "Kataha-jime",
+    "Gyaku-juji-jime",
+    "Ude-garami",
+    "Ude-hishigi-juji-gatame",
+    "Ude-hishigi-ude-gatame",
+    "Ude-hishigi-hiza-gatame",
+    "Ashi-garami",
+    "Этикет окончания",
+]
+
+ROW_NAMES_KIME_NO_KATA = [
+    "Этикет начала",
+    "Ryote-dori",
+    "Tsukkake",
+    "Suri-age",
+    "Yoko-uchi",
+    "Ushiro-dori",
+    "Tsukkomi",
+    "Kiri-komi",
+    "Yoko-tsuki",
+    "Ryote-dori (tachi-ai)",
+    "Sode-tori",
+    "Tsukkake (tachi-ai)",
+    "Tsuki-age",
+    "Suri-age (tachi-ai)",
+    "Yoko-uchi (tachi-ai)",
+    "Ke-age",
+    "Ushiro-dori (tachi-ai)",
+    "Tsukkomi (tachi-ai)",
+    "Kiri-komi (tachi-ai)",
+    "Nuki-gake",
+    "Kiri-oroshi",
+    "Этикет окончания",
+]
+
+ROW_NAMES_JU_NO_KATA = [
+    "Этикет начала",
+    "Tsuki-dashi",
+    "Kata-oshi",
+    "Ryote-dori",
+    "Kata-mawashi",
+    "Ago-oshi",
+    "Kiri-oroshi",
+    "Ryokata-oshi",
+    "Naname-uchi",
+    "Katate-dori",
+    "Katate-age",
+    "Obi-tori",
+    "Mune-oshi",
+    "Tsuki-age",
+    "Uchi-oroshi",
+    "Ryogan-tsuki",
+    "Этикет окончания",
+]
+
+ROW_NAMES_KODOKAN_GOSHIN_JUTSU = [
+    "Этикет начала",
+    "Ryote-dori",
+    "Hidari-eri-dori",
+    "Migi-eri-dori",
+    "Kataude-dori",
+    "Ushiro-eri-dori",
+    "Ushiro-jime",
+    "Kakae-dori",
+    "Naname-uchi",
+    "Ago-tsuki",
+    "Ganmen-tsuki",
+    "Mae-geri",
+    "Yoko-geri",
+    "Tsukkake",
+    "Choku-tsuki",
+    "Naname-tsuki",
+    "Furiage",
+    "Furioroshi",
+    "Morote-tsuki",
+    "Shomen-zuke",
+    "Koshi-gamae",
+    "Haimen-zuke",
+    "Этикет окончания",
+]
+
+ROW_NAMES_KOSHIKI_NO_KATA = [
+    "Этикет начала",
+    "Tai",
+    "Yume-no-uchi",
+    "Ryoku-hi",
+    "Mizu-guruma",
+    "Mizu-nagare",
+    "Hiki-otoshi",
+    "Ko-daore",
+    "Uchi-kudaki",
+    "Tani-otoshi",
+    "Kuruma-daore",
+    "Shikoro-dori",
+    "Shikoro-gaeshi",
+    "Yudachi",
+    "Taki-otoshi",
+    "Mi-kudaki",
+    "Kuruma-gaeshi",
+    "Mizu-iri",
+    "Ryu-setsu",
+    "Saka-otoshi",
+    "Yuki-ore",
+    "Iwa-nami",
+    "Этикет окончания",
+]
+
+ROW_NAMES_ITSUTSU_NO_KATA = [
+    "Этикет начала",
+    "Ippon-me",
+    "Nihon-me",
+    "Sanbon-me",
+    "Yonhon-me",
+    "Gohon-me",
+    "Этикет окончания",
+]
+
+
+def _disc_key(name: str) -> str:
+    return name.lower().replace(" ", "").replace("-", "").replace("_", "")
+
+
+DISCIPLINE_ROWS_BY_KEY = {
+    _disc_key("Nage-no-kata"): ROW_NAMES_NAGE_NO_KATA,
+    _disc_key("Katame-no-kata"): ROW_NAMES_KATAME_NO_KATA,
+    _disc_key("Kime-no-kata"): ROW_NAMES_KIME_NO_KATA,
+    _disc_key("Ju-no-kata"): ROW_NAMES_JU_NO_KATA,
+    _disc_key("Kodokan Goshin-jutsu"): ROW_NAMES_KODOKAN_GOSHIN_JUTSU,
+    _disc_key("Koshiki-no-kata"): ROW_NAMES_KOSHIKI_NO_KATA,
+    _disc_key("Itsutsu-no-kata"): ROW_NAMES_ITSUTSU_NO_KATA,
+}
+
+Technics = [
+    "Nage-no-kata",
+    "Katame-no-kata",
+    "Kime-no-kata",
+    "Ju-no-kata",
+    "Kodokan Goshin-jutsu",
+    "Koshiki-no-kata",
+    "Itsutsu-no-kata",
+]

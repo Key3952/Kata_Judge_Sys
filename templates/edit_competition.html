@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}Редактор Соревнования{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <h2 class="text-white">📋 {{ config.name }}</h2>
+        <span class="badge bg-info mt-2">{{ config.status.upper() }}</span>
+    </div>
+    <div class="col-md-4 text-end">
+        <button onclick="toggleCompetition('{{ comp_name }}', '{{ config.status }}')"
+                class="btn {% if config.status == 'open' %}btn-danger{% else %}btn-success{% endif %}">
+            {% if config.status == 'open' %}🔒 Закрыть{% else %}🔓 Открыть{% endif %}
+        </button>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">📚 Дисциплины</h5>
+            </div>
+            <div class="card-body">
+                {% if disciplines %}
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Дисциплина</th>
+                                <th style="width: 80px;">Пар</th>
+                                <th style="width: 150px;">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for disc in disciplines %}
+                            <tr>
+                                <td><a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}" target="_blank" class="text-dark"><strong>{{ disc.name }}</strong></a></td>
+                                <td>{{ disc.pair_count }}</td>
+                                <td>
+                                    <a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}"
+                                       target="_blank" class="btn btn-sm btn-primary" title="Откроется в новой вкладке">
+                                        ✏️
+                                    </a>
+                                    <a href="{{ url_for('tablo', comp_name=comp_name, kata_key=disc.key) }}"
+                                       class="btn btn-sm btn-info">
+                                        📊
+                                    </a>
+                                    <button onclick="removeDiscipline('{{ comp_name }}', '{{ disc.key }}')"
+                                            class="btn btn-sm btn-danger">
+                                        🗑️
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-info mb-0">ℹ️ Дисциплины не добавлены</div>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if available_disciplines %}
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">➕ Добавить Дисциплину</h5>
+            </div>
+            <div class="card-body">
+                <div class="input-group">
+                    <select id="discipline_select" class="form-select">
+                        <option value="">Выберите...</option>
+                        {% for disc in available_disciplines %}
+                        <option value="{{ disc.key }}">{{ disc.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button onclick="addDiscipline('{{ comp_name }}')" class="btn btn-accent">
+                        ➕ Добавить
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">ℹ️ Информация</h5>
+            </div>
+            <div class="card-body">
+                <p><strong>Статус:</strong> {{ config.status }}</p>
+                <p><strong>Создано:</strong> {{ config.created.split('T')[0] }}</p>
+                <p><strong>Дисциплин:</strong> {{ disciplines | length }}</p>
+
+                <hr>
+                <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary w-100">
+                    ← Вернуться
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function addDiscipline(compName) {
+    const disciplineKey = document.getElementById('discipline_select').value;
+    if (!disciplineKey) {
+        alert('Выберите дисциплину');
+        return;
+    }
+
+    fetch(`/admin/${compName}/add-discipline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ discipline_key: disciplineKey })
+    })
+    .then(r => r.json())
+    .then((data) => {
+        location.reload();
+    })
+    .catch(e => alert('Ошибка: ' + e));
+}
+
+function removeDiscipline(compName, disciplineKey) {
+    if (confirm('Удалить дисциплину? Все данные будут потеряны.')) {
+        fetch(`/admin/${compName}/remove-discipline`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ discipline_key: disciplineKey })
+        })
+        .then(r => r.json())
+        .then((data) => {
+            alert(data.message);
+            location.reload();
+        })
+        .catch(e => alert('Ошибка: ' + e));
+    }
+}
+
+function toggleCompetition(compName, status) {
+    const newStatus = status === 'open' ? 'close' : 'open';
+    fetch(`/admin/${compName}/${newStatus}`, {
+        method: 'POST'
+    })
+    .then(r => r.json())
+    .then((data) => {
+        alert(data.message);
+        location.reload();
+    })
+    .catch(e => alert('Ошибка: ' + e));
+}
+</script>
+{% endblock %}
