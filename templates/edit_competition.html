@@ -112,6 +112,11 @@ function addDiscipline(compName) {
         return;
     }
 
+    // Добавляем кнопке состояние загрузки
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Добавление...';
+
     fetch(`/admin/${compName}/add-discipline`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -119,9 +124,20 @@ function addDiscipline(compName) {
     })
     .then(r => r.json())
     .then((data) => {
-        location.reload();
+        // Плавное обновление с анимацией
+        const card = document.querySelector('.card-body');
+        card.style.opacity = '0.5';
+        card.style.transition = 'opacity 0.3s ease';
+
+        setTimeout(() => {
+            location.reload();
+        }, 300);
     })
-    .catch(e => alert('Ошибка: ' + e));
+    .catch(e => {
+        alert('Ошибка: ' + e);
+        btn.disabled = false;
+        btn.innerHTML = '➕ Добавить';
+    });
 }
 
 function removeDiscipline(compName, disciplineKey) {
@@ -134,7 +150,15 @@ function removeDiscipline(compName, disciplineKey) {
         .then(r => r.json())
         .then((data) => {
             alert(data.message);
-            location.reload();
+
+            // Плавное затухание перед перезагрузкой
+            const row = event.target.closest('tr');
+            row.style.opacity = '0';
+            row.style.transition = 'opacity 0.3s ease';
+
+            setTimeout(() => {
+                location.reload();
+            }, 300);
         })
         .catch(e => alert('Ошибка: ' + e));
     }
@@ -152,5 +176,33 @@ function toggleCompetition(compName, status) {
     })
     .catch(e => alert('Ошибка: ' + e));
 }
+
+// Добавляем стили для анимации
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideInDown {
+        from {
+            opacity: 0;
+            transform: translateY(-20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .card {
+        animation: slideInDown 0.3s ease-out;
+    }
+
+    tr {
+        transition: opacity 0.3s ease, background-color 0.2s ease;
+    }
+
+    tr:hover {
+        background-color: rgba(0, 0, 0, 0.02);
+    }
+`;
+document.head.appendChild(style);
 </script>
 {% endblock %}

@@ -44,6 +44,20 @@ os.makedirs(COMPETITIONS_BASE_DIR, exist_ok=True)
 ADMIN_PASSWORD = 'admin123'
 
 
+# ==================== СТАТИЧЕСКИЕ ФАЙЛЫ ====================
+
+@app.route('/competitions/<path:filename>')
+def serve_competition_files(filename):
+    """Служить файлы из папки competitions"""
+    filepath = os.path.join(COMPETITIONS_BASE_DIR, filename)
+    # Проверяем, что путь находится внутри COMPETITIONS_BASE_DIR
+    if os.path.abspath(filepath).startswith(os.path.abspath(COMPETITIONS_BASE_DIR)):
+        if os.path.exists(filepath):
+            from flask import send_file
+            return send_file(filepath)
+    return redirect(url_for('public_dashboard'))
+
+
 # ==================== АДМИНИСТРАТИВНАЯ ЧАСТЬ ====================
 
 @app.route('/')
@@ -104,8 +118,11 @@ def config_competition():
         
         if not comp_name:
             flash('Укажите название соревнования', 'danger')
-            return render_template('config.html')
+            return render_template('config.html', default_path=COMPETITIONS_BASE_DIR)
         
+        # Нормализуем путь для Windows и Linux
+        comp_path = comp_path.replace('\\', os.sep).replace('/', os.sep)
+
         # Проверяем доступ к директории
         if not os.path.isdir(comp_path) or not os.access(comp_path, os.W_OK):
             comp_path = COMPETITIONS_BASE_DIR
@@ -118,13 +135,26 @@ def config_competition():
         try:
             os.makedirs(comp_full_path, exist_ok=True)
             
+            # Обработка баннера
+            banner_path = ''
+            if 'banner_file' in request.files:
+                banner_file = request.files['banner_file']
+                if banner_file and banner_file.filename != '':
+                    # Сохраняем баннер в папку соревнования
+                    from werkzeug.utils import secure_filename
+                    filename = secure_filename(banner_file.filename)
+                    banner_full_path = os.path.join(comp_full_path, 'banner_' + filename)
+                    banner_file.save(banner_full_path)
+                    # Сохраняем относительный путь в config
+                    banner_path = os.path.join(comp_folder_name, 'banner_' + filename).replace('\\', '/')
+            
             # Создаем файл config.json с информацией
             config = {
                 'name': comp_name,
                 'created': datetime.now().isoformat(),
                 'status': 'open',
                 'disciplines': [],
-                'banner': ''
+                'banner': banner_path
             }
             with open(os.path.join(comp_full_path, 'config.json'), 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
@@ -842,6 +872,13 @@ def tablo(comp_name, kata_key):
         flash('Дисциплина не найдена', 'danger')
         return redirect(url_for('public_dashboard'))
     
+    # Читаем конфиг
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    
     # Получаем список техник
     techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
     
@@ -864,7 +901,8 @@ def tablo(comp_name, kata_key):
                                  kata_key=kata_key,
                                  kata_name=get_discipline_display_name(kata_key),
                                  judges=judges,
-                                 results=existing_results)
+                                 results=existing_results,
+                                 config=config)
     
     # Если нет данных в CSV, рассчитываем заново
     results = []
@@ -955,7 +993,8 @@ def tablo(comp_name, kata_key):
                          kata_key=kata_key,
                          kata_name=get_discipline_display_name(kata_key),
                          judges=judges,
-                         results=final_results)
+                         results=final_results,
+                         config=config)
 
 
 # ==================== ERROR HANDLERS ====================
