@@ -3,6 +3,13 @@
 {% block title %}Администратор - Главная{% endblock %}
 
 {% block content %}
+<style>
+.clear-btn:hover {
+    background-color: red !important;
+    border-color: red !important;
+    color: white !important;
+}
+</style>
 <div class="row mb-4">
     <div class="col-md-8">
         <h2 class="text-white mb-0">📊 Администраторская Панель</h2>
@@ -16,12 +23,12 @@
 
 <div class="row mb-4">
     <div class="col-md-6">
-        <button class="btn btn-outline-secondary w-100" onclick="clearParticipants()">
+        <button class="btn btn-outline-secondary w-100 clear-btn" onclick="clearParticipants()">
             🗑️ Очистить Участников
         </button>
     </div>
     <div class="col-md-6">
-        <button class="btn btn-outline-secondary w-100" onclick="clearJudges()">
+        <button class="btn btn-outline-secondary w-100 clear-btn" onclick="clearJudges()">
             🗑️ Очистить Судей
         </button>
     </div>

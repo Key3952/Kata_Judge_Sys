@@ -19,15 +19,23 @@
 
                     <div class="mb-3">
                         <label for="comp_path" class="form-label">📁 Путь для Сохранения:</label>
-                        <input type="text" id="comp_path" name="comp_path" class="form-control form-control-lg"
-                               value="{{ default_path }}" placeholder="/path/to/competitions">
+                        <div class="input-group">
+                            <input type="text" id="comp_path" name="comp_path" class="form-control form-control-lg"
+                                   value="{{ default_path }}" placeholder="/path/to/competitions">
+                            <button type="button" class="btn btn-outline-secondary" onclick="document.getElementById('comp_path_file').click()">Обзор</button>
+                        </div>
+                        <input type="file" id="comp_path_file" webkitdirectory style="display: none;">
                         <small class="text-muted">По умолчанию: {{ default_path }}</small>
                     </div>
 
                     <div class="mb-4">
                         <label for="banner" class="form-label">🎨 Баннер (URL изображения):</label>
-                        <input type="url" id="banner" name="banner" class="form-control form-control-lg"
-                               placeholder="https://example.com/banner.png">
+                        <div class="input-group">
+                            <input type="url" id="banner" name="banner" class="form-control form-control-lg"
+                                   placeholder="https://example.com/banner.png">
+                            <button type="button" class="btn btn-outline-secondary" onclick="document.getElementById('banner_file').click()">Обзор</button>
+                        </div>
+                        <input type="file" id="banner_file" accept="image/*" style="display: none;">
                     </div>
 
                     <div class="d-grid gap-2">
@@ -43,5 +51,22 @@
         </div>
     </div>
 </div>
-{% endblock %}
 
+<script>
+document.getElementById('comp_path_file').addEventListener('change', function(event) {
+    const files = event.target.files;
+    if (files.length > 0) {
+        // Для директории, используем имя выбранной директории
+        document.getElementById('comp_path').value = files[0].name;
+    }
+});
+
+document.getElementById('banner_file').addEventListener('change', function(event) {
+    const file = event.target.files[0];
+    if (file) {
+        // Создаем object URL для локального файла
+        document.getElementById('banner').value = URL.createObjectURL(file);
+    }
+});
+</script>
+{% endblock %}

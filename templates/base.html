@@ -7,80 +7,11 @@
     <link href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}" rel="stylesheet">
     <style>
         :root {
-            /* Default theme variables */
-            --bg-main: linear-gradient(135deg, #1a3d5c 0%, #2d5a7b 100%);
-            --bg-card: #ffffff;
-            --text-primary: #333333;
-            --text-muted: #666666;
-            --accent-color: #d4af37;
-            --nav-bg: #1a3d5c;
-            --card-border: #e0e0e0;
-            --hover-bg: #f0f0f0;
-            --alert-danger-bg: #f8d7da;
-            --alert-danger-text: #721c24;
-            --alert-success-bg: #d4edda;
-            --alert-success-text: #155724;
-        }
-
-        /* Theme overrides */
-        body.theme-high-contrast-dark {
-            --bg-main: #000000;
-            --bg-card: #1a1a1a;
-            --text-primary: #ffffff;
-            --text-muted: #cccccc;
-            --accent-color: #ffffff;
-            --nav-bg: #000000;
-            --card-border: #333333;
-            --hover-bg: #2a2a2a;
-            --alert-danger-bg: #4a0000;
-            --alert-danger-text: #ff6666;
-            --alert-success-bg: #004a00;
-            --alert-success-text: #66ff66;
-        }
-
-        body.theme-clean-light {
-            --bg-main: #ffffff;
-            --bg-card: #f8f9fa;
-            --text-primary: #000000;
-            --text-muted: #6c757d;
-            --accent-color: #212529;
-            --nav-bg: #ffffff;
-            --card-border: #dee2e6;
-            --hover-bg: #e9ecef;
-            --alert-danger-bg: #f8d7da;
-            --alert-danger-text: #721c24;
-            --alert-success-bg: #d4edda;
-            --alert-success-text: #155724;
-        }
-
-        body.theme-natural-green {
-            --bg-main: linear-gradient(135deg, #7a9460 0%, #556b2f 100%);
-            --bg-card: rgba(255, 255, 255, 0.1);
-            --text-primary: #ffffff;
-            --text-muted: #e8f5e9;
-            --accent-color: #8bc34a;
-            --nav-bg: #33691e;
-            --card-border: rgba(255, 255, 255, 0.2);
-            --hover-bg: rgba(255, 255, 255, 0.05);
-            --alert-danger-bg: rgba(244, 67, 54, 0.8);
-            --alert-danger-text: #ffffff;
-            --alert-success-bg: rgba(76, 175, 80, 0.8);
-            --alert-success-text: #ffffff;
-        }
-
-        body.theme-deep-midnight {
-            --bg-main: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
-            --bg-card: rgba(255, 255, 255, 0.05);
-            --text-primary: #e0e0e0;
-            --text-muted: #b0b0b0;
-            --accent-color: #00d2ff;
-            --nav-bg: #0f0c29;
-            --card-border: rgba(0, 210, 255, 0.3);
-            --hover-bg: rgba(255, 255, 255, 0.1);
-            --alert-danger-bg: rgba(244, 67, 54, 0.8);
-            --alert-danger-text: #ffffff;
-            --alert-success-bg: rgba(76, 175, 80, 0.8);
-            --alert-success-text: #ffffff;
+            --primary: #1a3d5c;
+            --secondary: #2d5a7b;
+            --accent: #d4af37;
+            --light: #f8f9fa;
+            --dark: #1a3d5c;
         }
 
         * {
@@ -89,55 +20,53 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: var(--bg-main);
-            color: var(--text-primary);
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: #333;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
         }
 
         .navbar {
-            background: var(--nav-bg);
+            background: var(--dark);
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
         }
 
         .navbar-brand {
             font-weight: bold;
-            color: var(--accent-color) !important;
+            color: var(--accent) !important;
             font-size: 1.5rem;
         }
 
         .btn-primary {
-            background: var(--accent-color);
+            background: var(--primary);
             border: none;
             transition: all 0.3s ease;
         }
 
         .btn-primary:hover {
-            background: var(--accent-color);
-            opacity: 0.8;
+            background: var(--secondary);
             transform: translateY(-2px);
             box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
         }
 
         .btn-accent {
-            background: var(--accent-color);
-            color: var(--text-primary);
+            background: var(--accent);
+            color: var(--dark);
             border: none;
             font-weight: bold;
             transition: all 0.3s ease;
         }
 
         .btn-accent:hover {
-            background: var(--accent-color);
-            opacity: 0.8;
+            background: #e8c547;
             transform: translateY(-2px);
             box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
         }
 
         .card {
-            background: var(--bg-card);
-            border: 1px solid var(--card-border);
+            background: white;
+            border: 1px solid #e0e0e0;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             transition: all 0.3s ease;
         }
@@ -147,8 +76,8 @@
         }
 
         .card-header {
-            background: var(--nav-bg);
-            color: var(--text-primary);
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
             border: none;
         }
 
@@ -161,22 +90,20 @@
         }
 
         .text-accent {
-            color: var(--accent-color);
+            color: var(--accent);
         }
 
         .badge-primary {
-            background: var(--accent-color);
+            background: var(--primary);
         }
 
         .form-control, .form-select {
-            border: 1px solid var(--card-border);
-            background: var(--bg-card);
-            color: var(--text-primary);
+            border: 1px solid #ddd;
             transition: all 0.3s ease;
         }
 
         .form-control:focus, .form-select:focus {
-            border-color: var(--accent-color);
+            border-color: var(--accent);
             box-shadow: 0 0 0 0.2rem rgba(212, 175, 55, 0.25);
         }
 
@@ -186,13 +113,13 @@
         }
 
         .alert-danger {
-            background: var(--alert-danger-bg);
-            color: var(--alert-danger-text);
+            background: #f8d7da;
+            color: #721c24;
         }
 
         .alert-success {
-            background: var(--alert-success-bg);
-            color: var(--alert-success-text);
+            background: #d4edda;
+            color: #155724;
         }
 
         table {
@@ -200,32 +127,30 @@
         }
 
         table thead {
-            background: var(--nav-bg);
-            color: var(--text-primary);
+            background: var(--primary);
+            color: white;
         }
 
         table tbody tr {
             transition: all 0.2s ease;
-            background: var(--bg-card);
-            color: var(--text-primary);
         }
 
         table tbody tr:hover {
-            background: var(--hover-bg);
+            background: #f0f0f0;
         }
 
         .nav-link {
-            color: var(--text-primary) !important;
+            color: white !important;
             transition: all 0.3s ease;
         }
 
         .nav-link:hover {
-            color: var(--accent-color) !important;
+            color: var(--accent) !important;
         }
 
         footer {
-            background: var(--nav-bg);
-            color: var(--text-primary);
+            background: var(--dark);
+            color: white;
             text-align: center;
             padding: 1rem;
             font-size: 0.9rem;
@@ -254,14 +179,7 @@
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
-                <div class="ms-auto d-flex align-items-center">
-                    <select id="theme-switcher" class="form-select form-select-sm me-3" style="width: auto; background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--card-border);">
-                        <option value="default">Классический синий</option>
-                        <option value="high-contrast-dark">Черно-белый</option>
-                        <option value="clean-light">Бело-черный</option>
-                        <option value="natural-green">Фисташковый</option>
-                        <option value="deep-midnight">Полночь</option>
-                    </select>
+                <div class="ms-auto">
                     <a class="nav-link" href="{{ url_for('admin_dashboard') }}">Админ-панель</a>
                     <a class="nav-link" href="{{ url_for('admin_logout') }}">Выход</a>
                 </div>
@@ -290,35 +208,6 @@
     </footer>
 
     <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
-    <script>
-        // Theme switcher functionality
-        document.addEventListener('DOMContentLoaded', function() {
-            const themeSwitcher = document.getElementById('theme-switcher');
-            if (!themeSwitcher) return;
-
-            // Load saved theme
-            const savedTheme = localStorage.getItem('selected-theme') || 'default';
-            applyTheme(savedTheme);
-            themeSwitcher.value = savedTheme;
-
-            // Handle theme change
-            themeSwitcher.addEventListener('change', function() {
-                const selectedTheme = this.value;
-                applyTheme(selectedTheme);
-                localStorage.setItem('selected-theme', selectedTheme);
-            });
-        });
-
-        function applyTheme(theme) {
-            // Remove all theme classes
-            document.body.className = document.body.className.replace(/\btheme-\w+/g, '').trim();
-
-            // Apply new theme if not default
-            if (theme !== 'default') {
-                document.body.classList.add('theme-' + theme);
-            }
-        }
-    </script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>
