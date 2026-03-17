@@ -128,7 +128,7 @@ def config_competition():
             comp_path = COMPETITIONS_BASE_DIR
         
         # Создаем папку соревнования
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         comp_folder_name = f"{comp_name}_{timestamp}"
         comp_full_path = os.path.join(comp_path, comp_folder_name)
         
