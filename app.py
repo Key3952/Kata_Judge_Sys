@@ -380,7 +380,7 @@ def register_participants(comp_name, kata_key):
                 'ФИО': tori_name,
                 'год рождения': request.form.get(f'pair_{pair_index}_tori_birth', ''),
                 'разряд': request.form.get(f'pair_{pair_index}_tori_rank', ''),
-                'кю': '',
+                'кю': request.form.get(f'pair_{pair_index}_tori_kyu', ''),
                 'СШ': request.form.get(f'pair_{pair_index}_tori_school', ''),
                 'тренер': request.form.get(f'pair_{pair_index}_tori_coach', '')
             }
@@ -389,16 +389,19 @@ def register_participants(comp_name, kata_key):
                 'ФИО': uke_name,
                 'год рождения': request.form.get(f'pair_{pair_index}_uke_birth', ''),
                 'разряд': request.form.get(f'pair_{pair_index}_uke_rank', ''),
-                'кю': '',
+                'кю': request.form.get(f'pair_{pair_index}_uke_kyu', ''),
                 'СШ': request.form.get(f'pair_{pair_index}_uke_school', ''),
                 'тренер': request.form.get(f'pair_{pair_index}_uke_coach', '')
             }
             
             # Функция проверки полноты данных участника
+            # Сохраняем, если заполнены ФИО и год рождения, остальные поля опциональны
             def is_complete_participant(info):
-                return all(value.strip() for value in info.values() if value is not None)
+                fio = info.get('ФИО', '').strip()
+                birth_year = info.get('год рождения', '').strip()
+                return bool(fio) and bool(birth_year)
             
-            # Добавляем в глобальные CSV только если все поля заполнены
+            # Добавляем в глобальные CSV только если есть ФИО и год рождения
             if is_complete_participant(tori_info):
                 CSVManager.add_row(PARTICIPANTS_CSV, tori_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
             if is_complete_participant(uke_info):
@@ -410,11 +413,13 @@ def register_participants(comp_name, kata_key):
                 'Тори_ФИО': tori_name,
                 'Тори_год рождения': request.form.get(f'pair_{pair_index}_tori_birth', ''),
                 'Тори_разряд': request.form.get(f'pair_{pair_index}_tori_rank', ''),
+                'Тори_кю': request.form.get(f'pair_{pair_index}_tori_kyu', ''),
                 'Тори_СШ': request.form.get(f'pair_{pair_index}_tori_school', ''),
                 'Тори_тренер': request.form.get(f'pair_{pair_index}_tori_coach', ''),
                 'Уке_ФИО': uke_name,
                 'Уке_год рождения': request.form.get(f'pair_{pair_index}_uke_birth', ''),
                 'Уке_разряд': request.form.get(f'pair_{pair_index}_uke_rank', ''),
+                'Уке_кю': request.form.get(f'pair_{pair_index}_uke_kyu', ''),
                 'Уке_СШ': request.form.get(f'pair_{pair_index}_uke_school', ''),
                 'Уке_тренер': request.form.get(f'pair_{pair_index}_uke_coach', '')
             })
@@ -521,6 +526,23 @@ def get_judge_info():
     
     judge = CSVManager.search_by_name(JUDGES_CSV, name)
     return jsonify(judge or {})
+
+
+@app.route('/api/judges/validate')
+def validate_judge():
+    """API для проверки существует ли судья в списке"""
+    name = request.args.get('name', '').strip()
+    if not name:
+        return jsonify({'exists': False})
+    
+    # Проверяем точное совпадение имени судьи
+    all_judges = CSVManager.read_csv(JUDGES_CSV)
+    for judge in all_judges:
+        judge_name = judge.get('ФИО', '').strip()
+        if judge_name.lower() == name.lower():
+            return jsonify({'exists': True})
+    
+    return jsonify({'exists': False})
 
 
 @app.route('/api/<comp_name>/<kata_key>/registration-data')

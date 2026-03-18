@@ -41,11 +41,32 @@ class CSVManager:
     def add_row(filepath: str, row: Dict, headers: List[str]) -> None:
         """Добавляет новую строку в CSV файл"""
         rows = CSVManager.read_csv(filepath)
-        # Проверяем, есть ли уже такая запись
-        row_key = (row.get('ФИО'), row.get('год рождения'))
-        for existing_row in rows:
-            if (existing_row.get('ФИО'), existing_row.get('год рождения')) == row_key:
-                return  # Уже существует
+        
+        # Проверяем, что ФИО не пусто
+        fio = row.get('ФИО', '').strip()
+        if not fio:
+            return
+        
+        # Для глобальной базы участников требуется и ФИО и год рождения
+        # (определяется по наличию ключа 'год рождения' в row)
+        if 'год рождения' in row:
+            birth_year = row.get('год рождения', '').strip()
+            if not birth_year:
+                return  # Не сохраняем участников без года рождения
+        
+        # Проверяем, есть ли уже такая запись (по ФИО и году рождения для участников)
+        if 'год рождения' in row:
+            birth_year = row.get('год рождения', '').strip()
+            for existing_row in rows:
+                existing_fio = existing_row.get('ФИО', '').strip()
+                existing_birth = existing_row.get('год рождения', '').strip()
+                if existing_fio.lower() == fio.lower() and existing_birth == birth_year:
+                    return  # Уже существует
+        else:
+            # Для судей - проверяем по ФИО
+            for existing_row in rows:
+                if existing_row.get('ФИО', '').strip().lower() == fio.lower():
+                    return  # Уже существует
         
         rows.append(row)
         CSVManager.write_csv(filepath, rows, headers)
@@ -81,7 +102,7 @@ class CompetitionCSVManager:
     
     PARTICIPANTS_HEADERS = ['ФИО', 'год рождения', 'разряд', 'кю', 'СШ', 'тренер']
     JUDGES_HEADERS = ['ФИО']
-    PAIRS_HEADERS = ['номер пары', 'Тори_ФИО', 'Тори_год рождения', 'Тори_разряд', 'Тори_СШ', 'Тори_тренер', 'Уке_ФИО', 'Уке_год рождения', 'Уке_разряд', 'Уке_СШ', 'Уке_тренер']
+    PAIRS_HEADERS = ['номер пары', 'Тори_ФИО', 'Тори_год рождения', 'Тори_разряд', 'Тори_кю', 'Тори_СШ', 'Тори_тренер', 'Уке_ФИО', 'Уке_год рождения', 'Уке_разряд', 'Уке_кю', 'Уке_СШ', 'Уке_тренер']
     JUDGES_LIST_HEADERS = ['место', 'ФИО']
     FINAL_PROTOCOL_HEADERS = ['номер пары', 'Тори', 'Уке', 'Судья 1', 'Судья 2', 'Судья 3', 'Судья 4', 'Судья 5', 'Сумма', 'Место']
     

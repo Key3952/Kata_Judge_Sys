@@ -122,19 +122,24 @@ function addDiscipline(compName) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ discipline_key: disciplineKey })
     })
-    .then(r => r.json())
+    .then(r => {
+        if (!r.ok) throw new Error('Network response was not ok');
+        return r.json();
+    })
     .then((data) => {
-        // Плавное обновление с анимацией
-        const card = document.querySelector('.card-body');
-        card.style.opacity = '0.5';
-        card.style.transition = 'opacity 0.3s ease';
+        // Плавное затухание перед перезагрузкой
+        const addCard = document.querySelector('.card:has(#discipline_select)');
+        if (addCard) {
+            addCard.style.transition = 'all 0.3s ease-out';
+            addCard.style.opacity = '0';
+        }
 
         setTimeout(() => {
             location.reload();
         }, 300);
     })
     .catch(e => {
-        alert('Ошибка: ' + e);
+        console.error('Add discipline failed:', e);
         btn.disabled = false;
         btn.innerHTML = '➕ Добавить';
     });
@@ -142,25 +147,35 @@ function addDiscipline(compName) {
 
 function removeDiscipline(compName, disciplineKey) {
     if (confirm('Удалить дисциплину? Все данные будут потеряны.')) {
+        // Получаем строку таблицы для анимации
+        const row = event.target.closest('tr');
+
+        // Добавляем класс для анимации удаления
+        row.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
+        row.style.opacity = '0';
+        row.style.transform = 'translateX(-100%)';
+
         fetch(`/admin/${compName}/remove-discipline`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ discipline_key: disciplineKey })
         })
-        .then(r => r.json())
+        .then(r => {
+            if (!r.ok) throw new Error('Network response was not ok');
+            return r.json();
+        })
         .then((data) => {
-            alert(data.message);
-
             // Плавное затухание перед перезагрузкой
-            const row = event.target.closest('tr');
-            row.style.opacity = '0';
-            row.style.transition = 'opacity 0.3s ease';
-
             setTimeout(() => {
                 location.reload();
-            }, 300);
+            }, 400);
         })
-        .catch(e => alert('Ошибка: ' + e));
+        .catch(e => {
+            // Восстанавливаем строку при ошибке
+            row.style.opacity = '1';
+            row.style.transform = 'translateX(0)';
+            console.error('Delete failed:', e);
+        });
     }
 }
 
@@ -191,16 +206,44 @@ style.textContent = `
         }
     }
 
+    @keyframes slideOutLeft {
+        from {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        to {
+            opacity: 0;
+            transform: translateX(-100%);
+        }
+    }
+
+    @keyframes fadeOut {
+        from {
+            opacity: 1;
+        }
+        to {
+            opacity: 0;
+        }
+    }
+
     .card {
         animation: slideInDown 0.3s ease-out;
     }
 
     tr {
-        transition: opacity 0.3s ease, background-color 0.2s ease;
+        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     tr:hover {
         background-color: rgba(0, 0, 0, 0.02);
+    }
+
+    tr.deleting {
+        animation: slideOutLeft 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .card.removing {
+        animation: fadeOut 0.3s ease-out;
     }
 `;
 document.head.appendChild(style);

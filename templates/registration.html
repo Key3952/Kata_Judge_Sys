@@ -26,6 +26,7 @@
         vertical-align: middle;
         border-bottom: 1px solid #eee;
         position: relative;
+        overflow: visible;
     }
 
     .form-control-sm {
@@ -162,7 +163,8 @@
                             <th class="text-center" style="width: 80px;">Роль</th>
                             <th>ФИО Участника</th>
                             <th style="width: 100px;">Год</th>
-                            <th style="width: 140px;">Разряд/КЮ</th>
+                            <th style="width: 70px;">Разряд</th>
+                            <th style="width: 70px;">КЮ</th>
                             <th>СШ (Клуб)</th>
                             <th>Тренер</th>
                         </tr>
@@ -198,14 +200,13 @@ let pairCounter = 0;
 
 function createInput(name, placeholder, type="text", isAutocomplete=false) {
     const wrapper = document.createElement('div');
-    // Добавляем стиль display: block, чтобы обертка занимала всю ширину td
-    wrapper.className = isAutocomplete ? 'autocomplete-wrapper d-block w-100' : '';
+    wrapper.className = 'autocomplete-wrapper d-block w-100';
 
     const input = document.createElement('input');
     input.type = type;
     input.name = name;
     input.placeholder = placeholder;
-    input.className = `form-control form-control-sm ${isAutocomplete ? 'ac-input' : ''}`;
+    input.className = `form-control form-control-sm w-100 ${isAutocomplete ? 'ac-input' : ''}`;
     input.autocomplete = "off";
 
     wrapper.appendChild(input);
@@ -237,7 +238,7 @@ function addPair(data = null) {
             </div>
         </td>
         <td class="text-center"><span class="role-label role-tori">Тори</span></td>
-        <td class="name-td"></td><td class="birth-td"></td><td class="rank-td"></td><td class="school-td"></td><td class="coach-td"></td>
+        <td class="name-td"></td><td class="birth-td"></td><td class="rank-td"></td><td class="kyu-td"></td><td class="school-td"></td><td class="coach-td"></td>
     `;
 
     const tr2 = document.createElement('tr');
@@ -245,12 +246,12 @@ function addPair(data = null) {
     tr2.dataset.pairId = id;
     tr2.innerHTML = `
         <td class="text-center"><span class="role-label role-uke">Уке</span></td>
-        <td class="name-td"></td><td class="birth-td"></td><td class="rank-td"></td><td class="school-td"></td><td class="coach-td"></td>
+        <td class="name-td"></td><td class="birth-td"></td><td class="rank-td"></td><td class="kyu-td"></td><td class="school-td"></td><td class="coach-td"></td>
     `;
 
-    const fields = ['name', 'birth', 'rank', 'school', 'coach'];
-    const placeholders = ['ФИО', 'Год', 'Разряд', 'СШ/Клуб', 'Тренер'];
-    const dataMap = { 'name': '_ФИО', 'birth': '_год рождения', 'rank': '_разряд', 'school': '_СШ', 'coach': '_тренер' };
+    const fields = ['name', 'birth', 'rank', 'kyu', 'school', 'coach'];
+    const placeholders = ['ФИО', 'Год', 'Разряд', 'КЮ', 'СШ/Клуб', 'Тренер'];
+    const dataMap = { 'name': '_ФИО', 'birth': '_год рождения', 'rank': '_разряд', 'kyu': '_кю', 'school': '_СШ', 'coach': '_тренер' };
 
     fields.forEach((f, i) => {
         const isName = f === 'name';
@@ -364,6 +365,35 @@ function fetchParticipantInfo(name, row) {
         });
 }
 
+// Функция для проверки, что имя судьи существует в списке (валидное полное имя)
+async function isValidJudgeName(name) {
+    // Проверяем, что имя не пусто и не слишком короткое
+    const trimmed = name.trim();
+    if (trimmed.length < 2) return false;
+
+    try {
+        const response = await fetch(`/api/judges/validate?name=${encodeURIComponent(trimmed)}`);
+        const data = await response.json();
+        return data.exists === true;
+    } catch (e) {
+        console.error('Validation error:', e);
+        return false;
+    }
+}
+
+// Функция для проверки полноты данных участника для глобальной базы
+function isCompleteParticipant(pairId, role) {
+    // role = 'tori' или 'uke'
+    const nameInput = document.querySelector(`[name="pair_${pairId}_${role}_name"]`);
+    const birthInput = document.querySelector(`[name="pair_${pairId}_${role}_birth"]`);
+
+    const name = nameInput?.value.trim() || '';
+    const birth = birthInput?.value.trim() || '';
+
+    // Для сохранения в глобальную базу нужны ФИО и год рождения
+    return name.length > 0 && birth.length > 0;
+}
+
 // Автозаполнение судей
 function attachACJudges(input) {
     const wrapper = input.closest('.autocomplete-wrapper');
@@ -377,8 +407,15 @@ function attachACJudges(input) {
         });
     };
 
-    const selectItem = (item) => {
-        input.value = item.textContent;
+    const selectItem = async (item) => {
+        const judgeName = item.textContent;
+        // Проверяем что судья существует в списке
+        const isValid = await isValidJudgeName(judgeName);
+        if (!isValid) {
+            alert(`Имя "${judgeName}" не найдено в списке судей. Пожалуйста, выберите из списка подсказок.`);
+            return;
+        }
+        input.value = judgeName;
         results.style.display = 'none';
     };
 
@@ -425,6 +462,18 @@ function attachACJudges(input) {
             results.style.display = 'none';
         }
     });
+
+    // Проверяем что имя судьи в списке при потере фокуса
+    input.addEventListener('blur', async () => {
+        const name = input.value.trim();
+        if (name) {
+            const isValid = await isValidJudgeName(name);
+            if (!isValid) {
+                alert(`Имя "${name}" не найдено в списке судей. Пожалуйста, выберите из предложенного списка подсказок.`);
+                input.value = '';
+            }
+        }
+    });
 }
 
 function initJudges() {
@@ -450,11 +499,37 @@ function initJudges() {
 function autosave() {
     const formData = new FormData(document.getElementById('registrationForm'));
     const data = Object.fromEntries(formData.entries());
-    fetch(window.location.pathname, {
-        method: 'POST',
-        body: new URLSearchParams(data),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    }).catch(err => console.log('Autosave failed', err));
+
+    // Проверяем имена судей через API перед сохранением
+    let validationPromises = [];
+    for (let i = 1; i <= 5; i++) {
+        const judgeName = data[`judge_${i}_name`]?.trim() || '';
+        if (judgeName) {
+            validationPromises.push(
+                isValidJudgeName(judgeName).then(isValid => ({
+                    index: i,
+                    isValid: isValid,
+                    name: judgeName
+                }))
+            );
+        }
+    }
+
+    Promise.all(validationPromises).then(results => {
+        // Очищаем невалидные имена судей перед сохранением
+        results.forEach(result => {
+            if (!result.isValid) {
+                console.warn(`Судья ${result.index} (${result.name}) не найден в списке - не сохраняется`);
+                data[`judge_${result.index}_name`] = '';
+            }
+        });
+
+        fetch(window.location.pathname, {
+            method: 'POST',
+            body: new URLSearchParams(data),
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        }).catch(err => console.log('Autosave failed', err));
+    }).catch(err => console.log('Validation failed', err));
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -473,7 +548,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Загрузка данных
     fetch(`/api/${comp_name}/${kata_key}/registration-data`)
         .then(r => r.json())
-        .then(data => {
+        .then((data) => {
             if (data.existing_pairs && data.existing_pairs.length > 0) {
                 data.existing_pairs.forEach(p => addPair(p));
             }
@@ -510,3 +585,5 @@ document.addEventListener('click', (e) => {
 });
 </script>
 {% endblock %}
+
+
