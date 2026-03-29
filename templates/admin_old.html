@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Админ</title>
+    <link href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-5">
+        <h1>админ судейства</h1>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div class="alert alert-success">
+                    {{ messages[0] }}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <div class="row">
+            <div class="col-md-4">
+                <h3>Добавить участника</h3>
+                <form method="POST" action="{{ url_for('add_participant') }}">
+                    <div class="mb-3">
+                        <input type="text" class="form-control" name="name" placeholder="Имя" required>
+                    </div>
+                    <div class="mb-3">
+                        <input type="number" class="form-control" name="birth_year" placeholder="Год рождения" required>
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" class="form-control" name="rank" placeholder="Разряд">
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" class="form-control" name="kyu" placeholder="Кю">
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" class="form-control" name="sports_school" placeholder="Спортшкола">
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" class="form-control" name="coach" placeholder="Тренер">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Добавить</button>
+                </form>
+            </div>
+
+            <div class="col-md-4">
+                <h3>Добавить пару</h3>
+                <form method="POST" action="{{ url_for('add_pair') }}">
+                    <div class="mb-3">
+                        <select class="form-control" name="tori_id" required>
+                            <option value="">Выберите Тори</option>
+                            {% for p in participants %}
+                                <option value="{{ p.id }}">{{ p.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <select class="form-control" name="uke_id" required>
+                            <option value="">Выберите Уке</option>
+                            {% for p in participants %}
+                                <option value="{{ p.id }}">{{ p.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Добавить</button>
+                </form>
+            </div>
+
+            <div class="col-md-4">
+                <h3>Добавить судью</h3>
+                <form method="POST" action="{{ url_for('add_judge') }}">
+                    <div class="mb-3">
+                        <input type="text" class="form-control" name="name" placeholder="Имя судьи" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Добавить</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="mt-5">
+            <h3>Судьи</h3>
+            <ul class="list-group">
+                {% for j in judges %}
+                    <li class="list-group-item">
+                        {{ j.name }} - <a href="{{ url_for('judge_page', judge_id=j.id) }}" target="_blank">Открыть страницу судьи</a>
+                    </li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <div class="mt-5">
+            <a href="{{ url_for('results') }}" class="btn btn-success" target="_blank">Просмотр результатов</a>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
+</body>
+</html>

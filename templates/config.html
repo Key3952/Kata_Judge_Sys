@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Создание Соревнования{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h4 class="mb-0">➕ Создание Нового Соревнования</h4>
+            </div>
+            <div class="card-body p-5">
+                <form method="POST" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="comp_name" class="form-label">📝 Название Соревнования:</label>
+                        <input type="text" id="comp_name" name="comp_name" class="form-control form-control-lg"
+                               placeholder="Первенство..." required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="comp_path" class="form-label">📁 Путь для Сохранения:</label>
+                        <div class="input-group input-group-lg">
+                            <input type="text" id="comp_path" name="comp_path" class="form-control"
+                                   value="{{ default_path }}" placeholder="/path/to/competitions" readonly>
+                            <button type="button" class="btn btn-outline-secondary" id="browse_path_btn" title="Обзор">
+                                📂 Обзор
+                            </button>
+                        </div>
+                        <small class="text-muted">По умолчанию: {{ default_path }}</small>
+                        <input type="file" id="path_input" name="path_input" style="display: none;" webkitdirectory directory/>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="banner" class="form-label">🎨 Баннер (изображение):</label>
+                        <div class="input-group input-group-lg mb-2">
+                            <input type="text" id="banner_path" name="banner_path" class="form-control"
+                                   placeholder="Путь к баннеру" readonly>
+                            <button type="button" class="btn btn-outline-secondary" id="browse_banner_btn" title="Обзор">
+                                🖼️ Обзор
+                            </button>
+                        </div>
+                        <input type="file" id="banner_file" name="banner_file" accept="image/*" style="display: none;">
+                        <img id="banner_preview" src="" alt="Предпросмотр баннера" style="max-width: 100%; max-height: 150px; display: none;" class="mt-2">
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-accent btn-lg">
+                            ✅ Создать Соревнование
+                        </button>
+                        <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary btn-lg">
+                            ❌ Отмена
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('browse_path_btn').addEventListener('click', function() {
+    document.getElementById('path_input').click();
+});
+
+document.getElementById('path_input').addEventListener('change', function(e) {
+    if (e.target.files.length > 0) {
+        const file = e.target.files[0];
+        const path = file.webkitRelativePath || file.name;
+        const dirPath = path.substring(0, path.lastIndexOf('/'));
+        document.getElementById('comp_path').value = dirPath;
+    }
+});
+
+document.getElementById('browse_banner_btn').addEventListener('click', function() {
+    document.getElementById('banner_file').click();
+});
+
+document.getElementById('banner_file').addEventListener('change', function(e) {
+    if (e.target.files.length > 0) {
+        const file = e.target.files[0];
+        document.getElementById('banner_path').value = file.name;
+
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            const preview = document.getElementById('banner_preview');
+            preview.src = event.target.result;
+            preview.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+    }
+});
+
+// Нормализация пути для Windows и Linux
+document.querySelector('form').addEventListener('submit', function(e) {
+    const pathInput = document.getElementById('comp_path');
+    if (pathInput.value) {
+        // Конвертируем обратные слеши в прямые для унификации
+        let path = pathInput.value.replace(/\\/g, '/');
+        pathInput.value = path;
+    }
+});
+</script>
+{% endblock %}
