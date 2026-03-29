@@ -753,7 +753,8 @@ def public_dashboard():
                         'disciplines': disciplines
                     })
     
-    competitions.sort(reverse=True)
+    # Сортируем по имени соревнования в обратном порядке
+    competitions.sort(key=lambda x: x['name'], reverse=True)
     return render_template('public_dashboard.html', competitions=competitions)
 
 

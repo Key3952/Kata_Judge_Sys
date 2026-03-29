@@ -139,6 +139,9 @@
                 </select>
             </div>
         </div>
+        <div class="mt-3 text-center">
+            <button type="button" class="btn btn-primary" onclick="confirmSelection()">Подтвердить выбор</button>
+        </div>
     </div>
 
     <div class="card shadow border-0" id="scoringContainer" style="display: none;">
@@ -214,18 +217,71 @@ let state = {
     techniques: []
 };
 
-document.addEventListener('DOMContentLoaded', () => {
-    // Инициализируем данные для каждой техники
-    document.querySelectorAll('tbody tr').forEach(tr => {
-        state.techniques.push({
-            m1: 0, m2: 0, med: 0, big: 0, c_plus: 0, c_minus: 0, forgotten: false
-        });
+// Инициализация state при загрузке страницы
+document.addEventListener('DOMContentLoaded', function() {
+    // Инициализируем state.techniques с правильным количеством элементов
+    techniques.forEach((tech, idx) => {
+        state.techniques[idx] = {
+            m1: 0,
+            m2: 0,
+            med: 0,
+            big: 0,
+            c_plus: 0,
+            c_minus: 0,
+            forgotten: false
+        };
     });
-
-    const inputs = ['judge_name', 'judge_position', 'pair_number'];
-    inputs.forEach(id => document.getElementById(id).addEventListener('change', toggleUI));
 });
 
+// Функция для фиксации выбора судьи, места и пары
+function confirmSelection() {
+    const judgeSelect = document.getElementById('judge_name');
+    const positionSelect = document.getElementById('judge_position');
+    const pairSelect = document.getElementById('pair_number');
+    
+    // Фиксируем текущие значения
+    const judgeValue = judgeSelect.value;
+    const positionValue = positionSelect.value;
+    const pairValue = pairSelect.value;
+    
+    // Проверяем, что все поля заполнены
+    if (!judgeValue || !positionValue || !pairValue) {
+        alert('Пожалуйста, выберите судью, место и пару перед подтверждением.');
+        return;
+    }
+    
+    // Блокируем поля
+    judgeSelect.disabled = true;
+    positionSelect.disabled = true;
+    pairSelect.disabled = true;
+    
+    // Меняем текст кнопки
+    const confirmButton = document.querySelector('button[onclick="confirmSelection()"]');
+    confirmButton.textContent = 'Выбор зафиксирован';
+    confirmButton.disabled = true;
+    confirmButton.classList.remove('btn-primary');
+    confirmButton.classList.add('btn-success');
+    
+    // Показываем блок оценок
+    toggleUI();
+    
+    // Инициализируем state.techniques при первом подтверждении выбора
+    if (state.techniques.length === 0) {
+        techniques.forEach((tech, idx) => {
+            state.techniques[idx] = {
+                m1: 0,
+                m2: 0,
+                med: 0,
+                big: 0,
+                c_plus: 0,
+                c_minus: 0,
+                forgotten: false
+            };
+        });
+    }
+}
+
+// Функция для переключения видимости блока оценок
 function toggleUI() {
     const show = ['judge_name', 'judge_position', 'pair_number'].every(id => document.getElementById(id).value !== "");
     document.getElementById('scoringContainer').style.display = show ? 'block' : 'none';
