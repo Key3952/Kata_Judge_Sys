@@ -24,6 +24,92 @@ def get_discipline_display_name(key):
     return display_names.get(key.lower(), key)
 
 
+def _participant_detail_line(pair_row: dict, prefix: str) -> str:
+    """prefix: 'Тори_' или 'Уке_'"""
+    parts = [
+        pair_row.get(f'{prefix}год рождения', '').strip(),
+        pair_row.get(f'{prefix}разряд', '').strip(),
+        pair_row.get(f'{prefix}кю', '').strip(),
+        pair_row.get(f'{prefix}СШ', '').strip(),
+        pair_row.get(f'{prefix}тренер', '').strip(),
+    ]
+    return ', '.join(p for p in parts if p)
+
+
+def encode_participant_for_protocol(pair_row: dict, role: str) -> str:
+    """role: 'Тори' или 'Уке'. В CSV: Имя||остальное через запятую"""
+    prefix = f'{role}_'
+    name = pair_row.get(f'{prefix}ФИО', '').strip()
+    detail = _participant_detail_line(pair_row, prefix)
+    if detail:
+        return f'{name}||{detail}'
+    return name
+
+
+def decode_participant_cell(cell_value) -> dict:
+    if cell_value is None:
+        return {'name': '', 'detail': ''}
+    s = str(cell_value).strip()
+    if '||' in s:
+        name, _, rest = s.partition('||')
+        return {'name': name.strip(), 'detail': rest.strip()}
+    return {'name': s, 'detail': ''}
+
+
+def enrich_result_row_cells(result: dict, pair_row: dict = None) -> None:
+    if pair_row:
+        result['tori_cell'] = {
+            'name': pair_row.get('Тори_ФИО', '').strip(),
+            'detail': _participant_detail_line(pair_row, 'Тори_'),
+        }
+        result['uke_cell'] = {
+            'name': pair_row.get('Уке_ФИО', '').strip(),
+            'detail': _participant_detail_line(pair_row, 'Уке_'),
+        }
+    else:
+        result['tori_cell'] = decode_participant_cell(result.get('tori', ''))
+        result['uke_cell'] = decode_participant_cell(result.get('uke', ''))
+
+
+def judge_score_cell_style(score) -> dict:
+    if score is None:
+        return {'background': 'transparent', 'color': 'inherit'}
+    try:
+        v = float(score)
+    except (TypeError, ValueError):
+        return {'background': 'transparent', 'color': 'inherit'}
+    t = max(0.0, min(1.0, v / 170.0))
+    r = int(round(255 * (1 - t)))
+    g = int(round(255 * t))
+    b = 32
+    lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+    fg = '#0b1320' if lum > 0.62 else '#f8fafc'
+    return {'background': f'rgb({r},{g},{b})', 'color': fg}
+
+
+def tablo_sort_and_assign_places(results: list) -> list:
+    """Места только у пар с полной суммой; сортировка: по месту (лучшие выше), без месты — по номеру пары."""
+    ranked = [r for r in results if r.get('final_score') is not None]
+    unranked = [r for r in results if r.get('final_score') is None]
+    ranked.sort(key=lambda x: (-x['final_score'], x['pair_number']))
+    for i, r in enumerate(ranked):
+        r['place'] = i + 1
+    for r in unranked:
+        r['place'] = None
+    unranked.sort(key=lambda x: x['pair_number'])
+    return ranked + unranked
+
+
+def prepare_tablo_results(results: list, pairs: list) -> list:
+    pairs_by_num = {int(p.get('номер пары', 0)): p for p in pairs}
+    out = tablo_sort_and_assign_places(results)
+    for r in out:
+        pr = pairs_by_num.get(r['pair_number'])
+        enrich_result_row_cells(r, pr)
+        r['judge_cell_styles'] = [judge_score_cell_style(s) for s in r.get('judge_scores', [])]
+    return out
+
+
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['SECRET_KEY'] = 'your_secret_key_here_change_in_production'
 app.config['SESSION_COOKIE_SECURE'] = False
@@ -394,18 +480,16 @@ def register_participants(comp_name, kata_key):
                 'тренер': request.form.get(f'pair_{pair_index}_uke_coach', '')
             }
             
-            # Функция проверки полноты данных участника
-            # Сохраняем, если заполнены ФИО и год рождения, остальные поля опциональны
-            def is_complete_participant(info):
-                fio = info.get('ФИО', '').strip()
-                birth_year = info.get('год рождения', '').strip()
-                return bool(fio) and bool(birth_year)
+            def is_fully_filled_participant(info):
+                for h in CompetitionCSVManager.PARTICIPANTS_HEADERS:
+                    if not str(info.get(h, '')).strip():
+                        return False
+                return True
             
-            # Добавляем в глобальные CSV только если есть ФИО и год рождения
-            if is_complete_participant(tori_info):
-                CSVManager.add_row(PARTICIPANTS_CSV, tori_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
-            if is_complete_participant(uke_info):
-                CSVManager.add_row(PARTICIPANTS_CSV, uke_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+            if is_fully_filled_participant(tori_info):
+                CSVManager.upsert_participant(PARTICIPANTS_CSV, tori_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+            if is_fully_filled_participant(uke_info):
+                CSVManager.upsert_participant(PARTICIPANTS_CSV, uke_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
             
             # Добавляем в локальный CSV пар
             pairs_data.append({
@@ -493,6 +577,29 @@ def search_participants():
     
     suggestions = CSVManager.get_name_suggestions(PARTICIPANTS_CSV, query)
     return jsonify(suggestions)
+
+
+@app.route('/api/participants/column-suggestions')
+def participants_column_suggestions():
+    """Подсказки по уникальным значениям столбца СШ или тренер (глобальный participants.csv)."""
+    field = request.args.get('field', '').strip()
+    q = request.args.get('q', '').strip()
+    if field not in ('СШ', 'тренер') or len(q) < 1:
+        return jsonify([])
+    rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+    out = []
+    seen = set()
+    ql = q.lower()
+    for row in rows:
+        v = (row.get(field) or '').strip()
+        if not v or v.lower() in seen:
+            continue
+        if v.lower().startswith(ql):
+            seen.add(v.lower())
+            out.append(v)
+        if len(out) >= 20:
+            break
+    return jsonify(out)
 
 
 @app.route('/api/participants/info')
@@ -674,8 +781,8 @@ def save_judge_action(comp_name, kata_key):
         if not pair_entry:
             pair_entry = {
                 'номер пары': pair,
-                'Тори': tori_fio,
-                'Уке': uke_fio,
+                'Тори': encode_participant_for_protocol(pair_obj, 'Тори'),
+                'Уке': encode_participant_for_protocol(pair_obj, 'Уке'),
                 'Судья 1': '',
                 'Судья 2': '',
                 'Судья 3': '',
@@ -685,6 +792,9 @@ def save_judge_action(comp_name, kata_key):
                 'Место': ''
             }
             all_results.append(pair_entry)
+        else:
+            pair_entry['Тори'] = encode_participant_for_protocol(pair_obj, 'Тори')
+            pair_entry['Уке'] = encode_participant_for_protocol(pair_obj, 'Уке')
         
         # Обновляем оценку судьи
         judge_col = f'Судья {pos}'
@@ -832,8 +942,8 @@ def judge_page(comp_name, kata_key):
             if pair_obj:
                 pair_entry = {
                     'номер пары': pair_number,
-                    'Тори': pair_obj.get('Тори_ФИО', ''),
-                    'Уке': pair_obj.get('Уке_ФИО', ''),
+                    'Тори': encode_participant_for_protocol(pair_obj, 'Тори'),
+                    'Уке': encode_participant_for_protocol(pair_obj, 'Уке'),
                     'Судья 1': '',
                     'Судья 2': '',
                     'Судья 3': '',
@@ -843,6 +953,11 @@ def judge_page(comp_name, kata_key):
                     'Место': ''
                 }
                 all_results.append(pair_entry)
+        else:
+            pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == pair_number), None)
+            if pair_obj:
+                pair_entry['Тори'] = encode_participant_for_protocol(pair_obj, 'Тори')
+                pair_entry['Уке'] = encode_participant_for_protocol(pair_obj, 'Уке')
         
         # Обновляем оценку судьи в финальном протоколе
         if pair_entry:
@@ -895,105 +1010,82 @@ def tablo(comp_name, kata_key):
         flash('Дисциплина не найдена', 'danger')
         return redirect(url_for('public_dashboard'))
     
-    # Читаем конфиг
     config_file = os.path.join(comp_path, 'config.json')
     config = {}
     if os.path.exists(config_file):
         with open(config_file, 'r', encoding='utf-8') as f:
             config = json.load(f)
+    comp_display_name = config.get('name', comp_name)
     
-    # Получаем список техник
     techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
     
-    # Получаем пары
     pairs_file = os.path.join(disc_path, 'participants_list.csv')
     pairs = CSVManager.read_csv(pairs_file) if os.path.exists(pairs_file) else []
     
-    # Получаем судей
     judges_file = os.path.join(disc_path, 'judges_list.csv')
     judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
     
-    # Пытаемся прочитать результаты из final_protocol.csv
     final_protocol_path = os.path.join(comp_path, kata_key, 'final_protocol.csv')
+    
+    def build_results_from_pairs():
+        results = []
+        for pair in pairs:
+            pair_number = int(pair.get('номер пары', 0))
+            judge_scores = []
+            for judge in judges:
+                judge_pos = int(judge.get('место', 0))
+                judge_name = judge.get('ФИО', '')
+                scores = CompetitionCSVManager.read_judge_scores(
+                    comp_path, kata_key, judge_name, judge_pos, pair.get('Тори_ФИО', ''), pair.get('Уке_ФИО', '')
+                )
+                if scores:
+                    technique_scores = []
+                    forgotten_flags = []
+                    for tech in techniques:
+                        detail = scores.get(tech, {})
+                        if detail.get('forgotten', False):
+                            technique_scores.append(0.0)
+                            forgotten_flags.append(True)
+                        else:
+                            score = 10.0
+                            score -= detail.get('m1', 0)
+                            score -= detail.get('m2', 0)
+                            score -= detail.get('med', 0)
+                            score -= detail.get('big', 0)
+                            score -= detail.get('c_minus', 0)
+                            score -= detail.get('c_plus', 0)
+                            technique_scores.append(max(0, min(10, score)))
+                            forgotten_flags.append(False)
+                    judge_total = sum(technique_scores)
+                    if any(forgotten_flags):
+                        judge_total /= 2
+                    judge_scores.append(judge_total)
+                else:
+                    judge_scores.append(None)
+            if len(judge_scores) == 5 and all(s is not None for s in judge_scores):
+                final_score = calculate_pair_final_score(judge_scores)
+            else:
+                final_score = None
+            results.append({
+                'pair_number': pair_number,
+                'tori': encode_participant_for_protocol(pair, 'Тори'),
+                'uke': encode_participant_for_protocol(pair, 'Уке'),
+                'judge_scores': judge_scores,
+                'final_score': final_score,
+            })
+        return results
+    
     if os.path.exists(final_protocol_path):
         existing_results = CompetitionCSVManager.read_final_protocol(comp_path, kata_key)
         if existing_results:
-            # Если есть данные в CSV, используем их
-            return render_template('tablo.html',
-                                 comp_name=comp_name,
-                                 kata_key=kata_key,
-                                 kata_name=get_discipline_display_name(kata_key),
-                                 judges=judges,
-                                 results=existing_results,
-                                 config=config)
-    
-    # Если нет данных в CSV, рассчитываем заново
-    results = []
-    for pair in pairs:
-        pair_number = int(pair.get('номер пары', 0))
-        judge_scores = []
-        
-        for judge in judges:
-            judge_pos = int(judge.get('место', 0))
-            judge_name = judge.get('ФИО', '')
-            scores = CompetitionCSVManager.read_judge_scores(
-                comp_path, kata_key, judge_name, judge_pos, pair.get('Тори_ФИО', ''), pair.get('Уке_ФИО', '')
-            )
-            
-            if scores:
-                # Рассчитываем scores из details
-                technique_scores = []
-                forgotten_flags = []
-                for tech in techniques:
-                    detail = scores.get(tech, {})
-                    if detail.get('forgotten', False):
-                        technique_scores.append(0.0)
-                        forgotten_flags.append(True)
-                    else:
-                        score = 10.0
-                        score -= detail.get('m1', 0)
-                        score -= detail.get('m2', 0)
-                        score -= detail.get('med', 0)
-                        score -= detail.get('big', 0)
-                        score -= detail.get('c_minus', 0)
-                        score -= detail.get('c_plus', 0)
-                        technique_scores.append(max(0, min(10, score)))
-                        forgotten_flags.append(False)
-                
-                judge_total = sum(technique_scores)
-                if any(forgotten_flags):
-                    judge_total /= 2
-                judge_scores.append(judge_total)
-            else:
-                judge_scores.append(None)
-        
-        # Если все судьи заполнили - рассчитываем финальный балл
-        if len(judge_scores) == 5 and all(s is not None for s in judge_scores):
-            final_score = calculate_pair_final_score(judge_scores)
+            base_results = existing_results
         else:
-            final_score = None
-        
-        results.append({
-            'pair_number': pair_number,
-            'tori': pair.get('Тори_ФИО', ''),
-            'uke': pair.get('Уке_ФИО', ''),
-            'judge_scores': judge_scores,
-            'final_score': final_score
-        })
+            base_results = build_results_from_pairs()
+    else:
+        base_results = build_results_from_pairs()
     
-    # Сортируем по финальному баллу (убывание), если есть
-    results_with_scores = [r for r in results if r['final_score'] is not None]
-    results_without_scores = [r for r in results if r['final_score'] is None]
+    final_results = prepare_tablo_results(base_results, pairs)
     
-    results_with_scores.sort(key=lambda x: x['final_score'], reverse=True)
-    
-    # Присваиваем места
-    for idx, result in enumerate(results_with_scores):
-        result['place'] = idx + 1
-    
-    final_results = results_with_scores + results_without_scores
-    
-    # Записываем результаты в final_protocol.csv
     rows = []
     for result in final_results:
         row = {
@@ -1006,18 +1098,21 @@ def tablo(comp_name, kata_key):
             'Судья 4': result['judge_scores'][3] if len(result['judge_scores']) > 3 and result['judge_scores'][3] is not None else '',
             'Судья 5': result['judge_scores'][4] if len(result['judge_scores']) > 4 and result['judge_scores'][4] is not None else '',
             'Сумма': result['final_score'] if result['final_score'] is not None else '',
-            'Место': result.get('place', '')
+            'Место': result['place'] if result.get('place') is not None else '',
         }
         rows.append(row)
     CSVManager.write_csv(final_protocol_path, rows, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
     
-    return render_template('tablo.html',
-                         comp_name=comp_name,
-                         kata_key=kata_key,
-                         kata_name=get_discipline_display_name(kata_key),
-                         judges=judges,
-                         results=final_results,
-                         config=config)
+    return render_template(
+        'tablo.html',
+        comp_name=comp_name,
+        comp_display_name=comp_display_name,
+        kata_key=kata_key,
+        kata_name=get_discipline_display_name(kata_key),
+        judges=judges,
+        results=final_results,
+        config=config,
+    )
 
 
 # ==================== ERROR HANDLERS ====================

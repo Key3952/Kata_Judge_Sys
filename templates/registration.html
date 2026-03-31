@@ -95,7 +95,7 @@
         padding: 4px 8px;
         border-radius: 4px;
         display: inline-block;
-        width: 50px;
+        min-width: 58px;
     }
 
     .role-tori { background: #ebf5ff; color: #2980b9; border: 1px solid #bae3ff; }
@@ -180,6 +180,10 @@
 
     .fade-in { animation: fadeIn 0.3s ease-out; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+    .pair-num-cell {
+        background: var(--table-row-alt);
+    }
 </style>
 {% endblock %}
 
@@ -207,10 +211,10 @@
                     <thead>
                         <tr>
                             <th class="text-center" style="width: 70px;">№</th>
-                            <th class="text-center" style="width: 95px;">Роль</th>
+                            <th class="text-center" style="width: 118px;">Роль</th>
                             <th>ФИО Участника</th>
                             <th style="width: 100px;">Год</th>
-                            <th style="width: 70px;">Разряд</th>
+                            <th style="width: 78px;">Разряд<br><small class="fw-normal opacity-75">1 дан, кю…</small></th>
                             <th style="width: 70px;">КЮ</th>
                             <th>СШ (Клуб)</th>
                             <th>Тренер</th>
@@ -278,7 +282,7 @@ function addPair(data = null) {
     tr1.className = 'fade-in';
     tr1.dataset.pairId = id;
     tr1.innerHTML = `
-        <td rowspan="2" class="text-center border-end bg-light">
+        <td rowspan="2" class="text-center border-end pair-num-cell">
             <div class="pair-control">
                 <div class="pair-badge">${id + 1}</div>
                 <button type="button" class="btn-delete-pair" onclick="deletePair(${id})">×</button>
@@ -321,6 +325,10 @@ function addPair(data = null) {
 
     attachAC(tr1);
     attachAC(tr2);
+    attachColumnAC(tr1.querySelector('.school-td input'), 'СШ');
+    attachColumnAC(tr2.querySelector('.school-td input'), 'СШ');
+    attachColumnAC(tr1.querySelector('.coach-td input'), 'тренер');
+    attachColumnAC(tr2.querySelector('.coach-td input'), 'тренер');
 }
 
 function deletePair(id) {
@@ -331,6 +339,15 @@ function deletePair(id) {
 function reindexPairs() {
     document.querySelectorAll('.pair-badge').forEach((b, i) => b.textContent = i + 1);
 }
+
+function closeAllAutocomplete() {
+    document.querySelectorAll('.autocomplete-results').forEach((el) => { el.style.display = 'none'; });
+}
+
+document.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.autocomplete-wrapper')) return;
+    closeAllAutocomplete();
+});
 
 // Автозаполнение ФИО участников
 function attachAC(row) {
@@ -367,15 +384,23 @@ function attachAC(row) {
                         const div = document.createElement('div');
                         div.className = 'autocomplete-item';
                         div.textContent = name;
-                        div.onclick = () => selectItem(div);
+                        div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
                         results.appendChild(div);
                     });
+                } else {
+                    results.style.display = 'none';
                 }
-            }).catch(() => results.style.display = 'none');
+            }).catch(() => { results.style.display = 'none'; });
     });
 
     input.addEventListener('keydown', (e) => {
         const items = results.querySelectorAll('.autocomplete-item');
+        if (e.key === 'Tab' && !e.shiftKey && items.length > 0 && results.style.display === 'block') {
+            e.preventDefault();
+            const idx = currentIndex < 0 ? 0 : currentIndex;
+            selectItem(items[idx]);
+            return;
+        }
         if (items.length === 0) return;
 
         if (e.key === 'ArrowDown') {
@@ -397,17 +422,92 @@ function attachAC(row) {
     });
 }
 
+function attachColumnAC(input, field) {
+    if (!input) return;
+    const wrapper = input.closest('.autocomplete-wrapper');
+    if (!wrapper) return;
+    let results = wrapper.querySelector('.autocomplete-results');
+    if (!results) {
+        results = document.createElement('div');
+        results.className = 'autocomplete-results';
+        wrapper.appendChild(results);
+    }
+    let currentIndex = -1;
+
+    const highlight = () => {
+        const items = results.querySelectorAll('.autocomplete-item');
+        items.forEach((item, i) => {
+            item.classList.toggle('highlighted', i === currentIndex);
+        });
+    };
+
+    const selectItem = (item) => {
+        input.value = item.textContent;
+        results.style.display = 'none';
+    };
+
+    input.addEventListener('input', () => {
+        const q = input.value.trim();
+        currentIndex = -1;
+        if (q.length < 1) { results.style.display = 'none'; return; }
+
+        fetch(`/api/participants/column-suggestions?field=${encodeURIComponent(field)}&q=${encodeURIComponent(q)}`)
+            .then(r => r.json())
+            .then(data => {
+                results.innerHTML = '';
+                if (data.length) {
+                    results.style.display = 'block';
+                    data.forEach(val => {
+                        const div = document.createElement('div');
+                        div.className = 'autocomplete-item';
+                        div.textContent = val;
+                        div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
+                        results.appendChild(div);
+                    });
+                } else {
+                    results.style.display = 'none';
+                }
+            }).catch(() => { results.style.display = 'none'; });
+    });
+
+    input.addEventListener('keydown', (e) => {
+        const items = results.querySelectorAll('.autocomplete-item');
+        if (e.key === 'Tab' && !e.shiftKey && items.length > 0 && results.style.display === 'block') {
+            e.preventDefault();
+            const idx = currentIndex < 0 ? 0 : currentIndex;
+            selectItem(items[idx]);
+            return;
+        }
+        if (items.length === 0) return;
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            currentIndex = (currentIndex + 1) % items.length;
+            highlight();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            currentIndex = (currentIndex - 1 + items.length) % items.length;
+            highlight();
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (currentIndex >= 0) selectItem(items[currentIndex]);
+        } else if (e.key === 'Escape') {
+            results.style.display = 'none';
+        }
+    });
+}
+
 function fetchParticipantInfo(name, row) {
     fetch(`/api/participants/info?name=${encodeURIComponent(name)}`)
         .then(r => r.json())
         .then(info => {
             const id = row.dataset.pairId;
             const role = row.querySelector('.role-label').classList.contains('role-tori') ? 'tori' : 'uke';
-            const mapping = { 'год рождения': 'birth', 'разряд': 'rank', 'СШ': 'school', 'тренер': 'coach' };
+            const mapping = { 'год рождения': 'birth', 'разряд': 'rank', 'кю': 'kyu', 'СШ': 'school', 'тренер': 'coach' };
 
             for (let [key, field] of Object.entries(mapping)) {
                 const el = document.querySelector(`[name="pair_${id}_${role}_${field}"]`);
-                if (el && info[key]) el.value = info[key];
+                if (el && info[key] !== undefined && info[key] !== null) el.value = info[key];
             }
         });
 }
@@ -420,15 +520,12 @@ async function isValidJudgeName(name) {
 
 // Функция для проверки полноты данных участника для глобальной базы
 function isCompleteParticipant(pairId, role) {
-    // role = 'tori' или 'uke'
-    const nameInput = document.querySelector(`[name="pair_${pairId}_${role}_name"]`);
-    const birthInput = document.querySelector(`[name="pair_${pairId}_${role}_birth"]`);
-
-    const name = nameInput?.value.trim() || '';
-    const birth = birthInput?.value.trim() || '';
-
-    // Для сохранения в глобальную базу нужны ФИО и год рождения
-    return name.length > 0 && birth.length > 0;
+    const fields = ['name', 'birth', 'rank', 'kyu', 'school', 'coach'];
+    for (const f of fields) {
+        const el = document.querySelector(`[name="pair_${pairId}_${role}_${f}"]`);
+        if (!el || !String(el.value).trim()) return false;
+    }
+    return true;
 }
 
 // Автозаполнение судей
@@ -465,15 +562,23 @@ function attachACJudges(input) {
                         const div = document.createElement('div');
                         div.className = 'autocomplete-item';
                         div.textContent = name;
-                        div.onclick = () => selectItem(div);
+                        div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
                         results.appendChild(div);
                     });
+                } else {
+                    results.style.display = 'none';
                 }
-            }).catch(() => results.style.display = 'none');
+            }).catch(() => { results.style.display = 'none'; });
     });
 
     input.addEventListener('keydown', (e) => {
         const items = results.querySelectorAll('.autocomplete-item');
+        if (e.key === 'Tab' && !e.shiftKey && items.length > 0 && results.style.display === 'block') {
+            e.preventDefault();
+            const idx = currentIndex < 0 ? 0 : currentIndex;
+            selectItem(items[idx]);
+            return;
+        }
         if (items.length === 0) return;
 
         if (e.key === 'ArrowDown') {

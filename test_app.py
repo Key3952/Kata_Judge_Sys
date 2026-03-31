@@ -23,6 +23,28 @@ class TestCSVManager(unittest.TestCase):
         self.assertEqual(len(read_rows), 2)
         self.assertEqual(read_rows[0]['name'], 'Alice')
 
+    def test_upsert_participant(self):
+        headers = CompetitionCSVManager.PARTICIPANTS_HEADERS
+        pcsv = os.path.join(self.temp_dir, 'parts.csv')
+        CSVManager.ensure_csv_exists(pcsv, headers)
+        full = {
+            'ФИО': 'Иванов Иван',
+            'год рождения': '2000',
+            'разряд': '1 дан',
+            'кю': '5',
+            'СШ': 'СШ1',
+            'тренер': 'Петров П.',
+        }
+        CSVManager.upsert_participant(pcsv, full, headers)
+        rows = CSVManager.read_csv(pcsv)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['разряд'], '1 дан')
+        full['разряд'] = '2 дан'
+        CSVManager.upsert_participant(pcsv, full, headers)
+        rows = CSVManager.read_csv(pcsv)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['разряд'], '2 дан')
+
 class TestCompetitionCSVManager(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()

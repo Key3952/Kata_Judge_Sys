@@ -70,6 +70,33 @@ class CSVManager:
         
         rows.append(row)
         CSVManager.write_csv(filepath, rows, headers)
+
+    @staticmethod
+    def upsert_participant(filepath: str, row: Dict, headers: List[str]) -> None:
+        """Добавляет или полностью перезаписывает участника по ФИО (без учёта регистра).
+
+        Запись создаётся/обновляется только если заполнены все поля из headers.
+        При совпадении ФИО с существующей строкой данные заменяются новыми.
+        """
+        fio = row.get('ФИО', '').strip()
+        if not fio:
+            return
+        for h in headers:
+            val = row.get(h, '')
+            if val is None or str(val).strip() == '':
+                return
+        rows = CSVManager.read_csv(filepath)
+        new_row = {h: str(row.get(h, '')).strip() for h in headers}
+        found_idx = None
+        for i, existing in enumerate(rows):
+            if existing.get('ФИО', '').strip().lower() == fio.lower():
+                found_idx = i
+                break
+        if found_idx is not None:
+            rows[found_idx] = new_row
+        else:
+            rows.append(new_row)
+        CSVManager.write_csv(filepath, rows, headers)
     
     @staticmethod
     def search_by_name(filepath: str, name: str) -> Optional[Dict]:

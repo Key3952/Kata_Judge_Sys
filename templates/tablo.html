@@ -8,23 +8,24 @@
         overflow-x: auto;
     }
 
-    table th {
+    .results-table table th {
         background: var(--primary);
         color: white;
         font-weight: bold;
         padding: 0.75rem;
     }
 
-    table td {
+    .results-table table td {
         padding: 0.75rem;
-        border-bottom: 1px solid #ddd;
+        border-bottom: 1px solid var(--card-border, #ddd);
+        vertical-align: top;
     }
 
-    table tbody tr:nth-child(odd) {
+    .results-table table tbody tr:nth-child(odd) {
         background: var(--table-row-alt);
     }
 
-    table tbody tr:hover {
+    .results-table table tbody tr:hover {
         background: var(--table-row-hover);
     }
 
@@ -40,23 +41,25 @@
         background: var(--place-3-bg) !important;
     }
 
-    .medal {
-        font-size: 1.2rem;
-        margin-right: 0.5rem;
+    .participant-name {
+        font-size: 1.05rem;
+        font-weight: 700;
+        display: block;
+        line-height: 1.25;
+    }
+
+    .participant-extra {
+        font-size: 0.8rem;
+        opacity: 0.92;
+        display: block;
+        margin-top: 0.25rem;
+        line-height: 1.3;
     }
 
     .judge-score {
         text-align: center;
         font-weight: bold;
-        min-width: 60px;
-    }
-
-    .judge-score.complete {
-        color: #155724;
-    }
-
-    .judge-score.incomplete {
-        color: #856404;
+        min-width: 64px;
     }
 
     .final-score {
@@ -77,7 +80,8 @@
 {% block content %}
 <div class="row mb-3">
     <div class="col-12">
-        <h2 class="page-hero-title">Протокол - {{ kata_name }}</h2>
+        <h2 class="page-hero-title">{{ comp_display_name }} — {{ kata_name }}</h2>
+        <p class="page-hero-subtitle mb-0">Протокол / табло результатов</p>
     </div>
 </div>
 
@@ -101,40 +105,40 @@
                 <table class="table table-sm mb-0">
                     <thead>
                         <tr>
-                            <th style="width: 60px;">Место</th>
-                            <th style="width: 60px;">Пара</th>
+                            <th style="width: 56px;">Пара</th>
                             <th>Тори</th>
                             <th>Уке</th>
                             {% for judge in judges %}
                             <th style="text-align: center;">Судья {{ judge['место'] }}</th>
                             {% endfor %}
-                            <th style="text-align: center; width: 70px;">Сумма</th>
+                            <th style="text-align: center; width: 78px;">Сумма</th>
+                            <th style="text-align: center; width: 72px;">Место</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for result in results %}
                         <tr class="{% if result.place == 1 %}place-1{% elif result.place == 2 %}place-2{% elif result.place == 3 %}place-3{% endif %}">
-                            <td class="place">
-                                {% if result.place == 1 %}
-                                🥇
-                                {% elif result.place == 2 %}
-                                🥈
-                                {% elif result.place == 3 %}
-                                🥉
-                                {% else %}
-                                -
+                            <td><strong>#{{ result.pair_number }}</strong></td>
+                            <td>
+                                <span class="participant-name">{{ result.tori_cell.name }}</span>
+                                {% if result.tori_cell.detail %}
+                                <span class="participant-extra text-muted-theme">{{ result.tori_cell.detail }}</span>
                                 {% endif %}
                             </td>
-                            <td><strong>#{{ result.pair_number }}</strong></td>
-                            <td>{{ result.tori }}</td>
-                            <td>{{ result.uke }}</td>
+                            <td>
+                                <span class="participant-name">{{ result.uke_cell.name }}</span>
+                                {% if result.uke_cell.detail %}
+                                <span class="participant-extra text-muted-theme">{{ result.uke_cell.detail }}</span>
+                                {% endif %}
+                            </td>
 
                             {% for score in result.judge_scores %}
-                            <td class="judge-score {% if score is not none %}complete{% else %}incomplete{% endif %}">
+                            {% set st = result.judge_cell_styles[loop.index0] %}
+                            <td class="judge-score" style="background: {{ st.background }}; color: {{ st.color }};">
                                 {% if score is not none %}
                                     {{ "%.1f"|format(score) }}
                                 {% else %}
-                                    -
+                                    —
                                 {% endif %}
                             </td>
                             {% endfor %}
@@ -143,7 +147,20 @@
                                 {% if result.final_score is not none %}
                                     {{ "%.1f"|format(result.final_score) }}
                                 {% else %}
-                                    -
+                                    —
+                                {% endif %}
+                            </td>
+                            <td class="place">
+                                {% if result.place == 1 %}
+                                🥇
+                                {% elif result.place == 2 %}
+                                🥈
+                                {% elif result.place == 3 %}
+                                🥉
+                                {% elif result.place %}
+                                {{ result.place }}
+                                {% else %}
+                                —
                                 {% endif %}
                             </td>
                         </tr>
@@ -161,21 +178,20 @@
 </div>
 
 <script>
-// Автоматическое обновление каждые 5 секунд без перезагрузки
 setInterval(() => {
     fetch(window.location.href)
         .then(r => r.text())
         .then(html => {
             const parser = new DOMParser();
             const newDoc = parser.parseFromString(html, 'text/html');
-            const newCardBody = newDoc.querySelector('.card-body');
-            const oldCardBody = document.querySelector('.card-body');
+            const newCardBody = newDoc.querySelector('.card-body.results-table');
+            const oldCardBody = document.querySelector('.card-body.results-table');
 
             if (newCardBody && oldCardBody) {
                 oldCardBody.parentElement.replaceChild(newCardBody, oldCardBody);
             }
         })
-        .catch(e => console.log('Не удалось обновить'));
+        .catch(() => {});
 }, 5000);
 </script>
 {% endblock %}
