@@ -4,26 +4,21 @@
 
 {% block extra_css %}
 <style>
-    :root {
-        --dark-bg: #2c3e50;
-        --accent-color: #3498db;
-    }
-
     .scoring-table {
         width: 100%;
         border-collapse: collapse;
-        background: white;
+        background: var(--card-bg);
     }
 
     .scoring-table thead {
-        background: var(--dark-bg);
+        background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
         color: white;
     }
 
     .scoring-table th, .scoring-table td {
         padding: 0.6rem;
         text-align: center;
-        border: 1px solid #dee2e6;
+        border: 1px solid var(--card-border);
         vertical-align: middle;
     }
 
@@ -31,7 +26,11 @@
         text-align: left !important;
         font-weight: 600;
         font-size: 0.9rem;
-        background: #f8f9fa;
+        background: var(--table-row-alt);
+    }
+
+    html[data-theme="dark"] .tech-name {
+        color: #fff;
     }
 
     .penalty-cell {
@@ -44,17 +43,17 @@
 
     .penalty-btn {
         padding: 6px 10px;
-        border: 1px solid #ced4da;
-        background: #fff;
+        border: 1px solid var(--card-border);
+        background: var(--card-bg);
         cursor: pointer;
         font-size: 0.8rem;
         border-radius: 4px;
         transition: all 0.2s;
         font-weight: bold;
-        color: #495057;
+        color: var(--page-text);
     }
 
-    .penalty-btn:hover { background: #e9ecef; }
+    .penalty-btn:hover { background: var(--table-row-hover); }
 
     .penalty-btn.active {
         background: #e74c3c;
@@ -69,14 +68,14 @@
     }
 
     .score-cell {
-        background: #fff3cd;
+        background: var(--warning-bg);
         font-size: 1.1rem;
         font-weight: bold;
-        color: #856404;
+        color: var(--warning-text);
     }
 
     .total-row {
-        background: var(--dark-bg);
+        background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
         color: white;
         font-weight: bold;
     }
@@ -88,14 +87,14 @@
     }
 
     .header-section {
-        background: white;
+        background: var(--card-bg);
         padding: 1.5rem;
         margin-bottom: 1rem;
         border-radius: 12px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        box-shadow: 0 4px 6px var(--shadow-soft);
     }
 
-    .form-label { font-weight: bold; color: var(--dark-bg); }
+    .form-label { font-weight: bold; color: var(--page-text); }
 
     @media (max-width: 768px) {
         .scoring-table { font-size: 0.75rem; }
@@ -106,8 +105,8 @@
 
 {% block content %}
 <div class="mb-4">
-    <h2 class="text-white fw-bold">⚖️ Судейский протокол</h2>
-    <p class="text-white-50">{{ comp_name }} | {{ kata_name }}</p>
+    <h2 class="page-hero-title fw-bold">⚖️ Судейский протокол</h2>
+    <p class="page-hero-subtitle mb-0">{{ comp_name }} | {{ kata_name }}</p>
 </div>
 
 <form id="judgeForm">
@@ -203,7 +202,7 @@
 
     <div class="mt-4 mb-5 d-flex gap-3">
         <button type="button" class="btn btn-success btn-lg shadow flex-grow-1" onclick="forceSave()">💾 Завершить оценивание</button>
-        <a href="/" class="btn btn-outline-light btn-lg">Выход</a>
+        <a href="/" class="btn btn-outline-contrast btn-lg">Выход</a>
     </div>
 </form>
 

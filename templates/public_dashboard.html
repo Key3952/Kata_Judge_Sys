@@ -27,9 +27,14 @@
         font-size: 0.9rem;
     }
 
+    html[data-theme="dark"] .discipline-btn,
+    html[data-theme="dark"] .discipline-btn small {
+        color: #fff;
+    }
+
     .discipline-btn:hover {
         transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        box-shadow: 0 5px 15px var(--shadow-soft);
     }
 
     .tablo-link {
@@ -47,8 +52,8 @@
 {% block content %}
 <div class="row mb-4">
     <div class="col-12">
-        <h1 class="text-white">⚖️ Система Судейства Дзюдо Ката</h1>
-        <p class="text-white">Публичный доступ для судей и табло</p>
+        <h1 class="page-hero-title">⚖️ Система Судейства Дзюдо Ката</h1>
+        <p class="page-hero-subtitle mb-0">Публичный доступ для судей и табло</p>
     </div>
 </div>
 
@@ -99,7 +104,7 @@
 
 <div class="row mt-4">
     <div class="col-12 text-center">
-        <a href="{{ url_for('admin_login') }}" class="btn btn-outline-dark">
+        <a href="{{ url_for('admin_login') }}" class="btn btn-outline-contrast">
             🔐 Вход в Админ-панель
         </a>
     </div>

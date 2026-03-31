@@ -5,7 +5,7 @@
 {% block content %}
 <div class="row mb-4">
     <div class="col-md-8">
-        <h2 class="text-white">📋 {{ config.name }}</h2>
+        <h2 class="page-hero-title">📋 {{ config.name }}</h2>
         <span class="badge bg-info mt-2">{{ config.status.upper() }}</span>
     </div>
     <div class="col-md-4 text-end">
@@ -25,7 +25,7 @@
             <div class="card-body">
                 {% if disciplines %}
                 <div class="table-responsive">
-                    <table class="table table-sm">
+                    <table class="table table-sm table-hover">
                         <thead>
                             <tr>
                                 <th>Дисциплина</th>
@@ -36,7 +36,7 @@
                         <tbody>
                             {% for disc in disciplines %}
                             <tr>
-                                <td><a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}" target="_blank" class="text-dark"><strong>{{ disc.name }}</strong></a></td>
+                                <td><a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}" target="_blank" class="link-body-emphasis"><strong>{{ disc.name }}</strong></a></td>
                                 <td>{{ disc.pair_count }}</td>
                                 <td>
                                     <a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}"

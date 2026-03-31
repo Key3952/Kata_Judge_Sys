@@ -5,7 +5,7 @@
 {% block content %}
 <div class="row mb-4">
     <div class="col-md-8">
-        <h2 class="text-white mb-0">📊 Администраторская Панель</h2>
+        <h2 class="page-hero-title mb-0">📊 Администраторская Панель</h2>
     </div>
     <div class="col-md-4 text-end">
         <a href="{{ url_for('config_competition') }}" class="btn btn-accent">
@@ -33,7 +33,7 @@
     .clear-btn:hover {
         background-color: #dc3545 !important;
         border-color: #dc3545 !important;
-        color: white !important;
+        color: #fff !important;
     }
 </style>
 
@@ -56,7 +56,7 @@
                         <tbody>
                             {% for comp in competitions %}
                             <tr>
-                                <td><a href="{{ url_for('edit_competition', comp_name=comp) }}" class="text-dark"><strong>{{ comp }}</strong></a></td>
+                                <td><a href="{{ url_for('edit_competition', comp_name=comp) }}" class="link-body-emphasis"><strong>{{ comp }}</strong></a></td>
                                 <td>
                                     <a href="{{ url_for('edit_competition', comp_name=comp) }}" class="btn btn-sm btn-primary">
                                         ✏️

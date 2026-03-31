@@ -1,35 +1,273 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-theme="default">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Система судейства Дзюдо Ката{% endblock %}</title>
     <link href="{{ url_for('static', filename='bootstrap/bootstrap.min.css') }}" rel="stylesheet">
     <style>
-        :root {
+        :root, html[data-theme="default"] {
             --primary: #1a3d5c;
             --secondary: #2d5a7b;
             --accent: #d4af37;
             --light: #f8f9fa;
             --dark: #1a3d5c;
+
+            --page-text: #333;
+            --page-bg: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            --card-bg: #ffffff;
+            --card-border: #e0e0e0;
+            --table-row-hover: #f0f0f0;
+            --navbar-bg: var(--dark);
+            --footer-bg: var(--dark);
+            --shadow-strong: rgba(0, 0, 0, 0.3);
+            --shadow-soft: rgba(0, 0, 0, 0.1);
+            --focus-ring: rgba(212, 175, 55, 0.25);
+
+            --hero-text: #ffffff;
+            --hero-muted: rgba(255, 255, 255, 0.85);
+            --muted-text: rgba(0, 0, 0, 0.62);
+            --table-row-alt: rgba(0, 0, 0, 0.035);
+            --warning-bg: #fff3cd;
+            --warning-text: #856404;
+
+            --place-1-bg: #fffde7;
+            --place-2-bg: #f0f0f0;
+            --place-3-bg: #f5ead1;
+        }
+
+        html[data-theme="dark"] {
+            --primary: #0e1b2a;
+            --secondary: #172b44;
+            --accent: #d4af37;
+            --light: #0f1720;
+            --dark: #0b1320;
+
+            --page-text: #e8eef6;
+            --page-bg: radial-gradient(1200px circle at 10% 10%, rgba(212, 175, 55, 0.10) 0%, transparent 55%),
+                       linear-gradient(135deg, #0b1320 0%, #121f33 100%);
+            --card-bg: rgba(255, 255, 255, 0.06);
+            --card-border: rgba(255, 255, 255, 0.12);
+            --table-row-hover: rgba(255, 255, 255, 0.06);
+            --navbar-bg: rgba(11, 19, 32, 0.92);
+            --footer-bg: rgba(11, 19, 32, 0.92);
+            --shadow-strong: rgba(0, 0, 0, 0.55);
+            --shadow-soft: rgba(0, 0, 0, 0.35);
+            --focus-ring: rgba(212, 175, 55, 0.25);
+
+            --hero-text: #e8eef6;
+            --hero-muted: rgba(232, 238, 246, 0.78);
+            --muted-text: rgba(232, 238, 246, 0.72);
+            --table-row-alt: rgba(255, 255, 255, 0.04);
+            --warning-bg: rgba(255, 183, 3, 0.14);
+            --warning-text: #ffd166;
+
+            --place-1-bg: rgba(255, 209, 102, 0.14);
+            --place-2-bg: rgba(255, 255, 255, 0.06);
+            --place-3-bg: rgba(217, 178, 111, 0.12);
+
+            --surface-1: rgba(0, 0, 0, 0.45);
+            --surface-2: rgba(0, 0, 0, 0.62);
+            --hover-accent: #ff8a1a;
+            --hover-accent-text: #0b1320;
+        }
+
+        html[data-theme="light"] {
+            --primary: #2a5aa6;
+            --secondary: #6aa8ff;
+            --accent: #b38600;
+            --light: #ffffff;
+            --dark: #0f1720;
+
+            --page-text: #0f1720;
+            --page-bg: linear-gradient(180deg, #f7fbff 0%, #eef4ff 55%, #ffffff 100%);
+            --card-bg: #ffffff;
+            --card-border: rgba(15, 23, 32, 0.12);
+            --table-row-hover: rgba(42, 90, 166, 0.08);
+            --navbar-bg: rgba(15, 23, 32, 0.92);
+            --footer-bg: rgba(15, 23, 32, 0.92);
+            --shadow-strong: rgba(15, 23, 32, 0.18);
+            --shadow-soft: rgba(15, 23, 32, 0.10);
+            --focus-ring: rgba(179, 134, 0, 0.25);
+
+            --hero-text: #0f1720;
+            --hero-muted: rgba(15, 23, 32, 0.72);
+            --muted-text: rgba(15, 23, 32, 0.62);
+            --table-row-alt: rgba(42, 90, 166, 0.05);
+            --warning-bg: rgba(255, 209, 102, 0.32);
+            --warning-text: #5a3e00;
+
+            --place-1-bg: rgba(255, 209, 102, 0.30);
+            --place-2-bg: rgba(42, 90, 166, 0.08);
+            --place-3-bg: rgba(255, 183, 3, 0.18);
+        }
+
+        html[data-theme="pistachio"] {
+            --primary: #1f4d3a;
+            --secondary: #2f7a5a;
+            --accent: #d9b26f;
+            --light: #f2fbf5;
+            --dark: #163829;
+
+            --page-text: #173022;
+            --page-bg: radial-gradient(1100px circle at 15% 10%, rgba(47, 122, 90, 0.25) 0%, transparent 55%),
+                       linear-gradient(135deg, #e8f6ee 0%, #cfeedd 55%, #f6fff9 100%);
+            --card-bg: rgba(255, 255, 255, 0.88);
+            --card-border: rgba(31, 77, 58, 0.18);
+            --table-row-hover: rgba(47, 122, 90, 0.10);
+            --navbar-bg: rgba(22, 56, 41, 0.92);
+            --footer-bg: rgba(22, 56, 41, 0.92);
+            --shadow-strong: rgba(22, 56, 41, 0.25);
+            --shadow-soft: rgba(22, 56, 41, 0.12);
+            --focus-ring: rgba(217, 178, 111, 0.30);
+
+            --hero-text: #173022;
+            --hero-muted: rgba(23, 48, 34, 0.70);
+            --muted-text: rgba(23, 48, 34, 0.62);
+            --table-row-alt: rgba(47, 122, 90, 0.06);
+            --warning-bg: rgba(217, 178, 111, 0.20);
+            --warning-text: #5b4522;
+
+            --place-1-bg: rgba(217, 178, 111, 0.22);
+            --place-2-bg: rgba(47, 122, 90, 0.08);
+            --place-3-bg: rgba(31, 77, 58, 0.08);
+        }
+
+        html[data-theme="ocean"] {
+            --primary: #0c3b4a;
+            --secondary: #0b7285;
+            --accent: #ffb703;
+            --light: #f4fbff;
+            --dark: #06212a;
+
+            --page-text: #06212a;
+            --page-bg: radial-gradient(1200px circle at 85% 15%, rgba(255, 183, 3, 0.18) 0%, transparent 48%),
+                       linear-gradient(135deg, #e9f8ff 0%, #c8f0ff 45%, #f7fdff 100%);
+            --card-bg: rgba(255, 255, 255, 0.92);
+            --card-border: rgba(6, 33, 42, 0.14);
+            --table-row-hover: rgba(11, 114, 133, 0.10);
+            --navbar-bg: rgba(6, 33, 42, 0.92);
+            --footer-bg: rgba(6, 33, 42, 0.92);
+            --shadow-strong: rgba(6, 33, 42, 0.20);
+            --shadow-soft: rgba(6, 33, 42, 0.10);
+            --focus-ring: rgba(255, 183, 3, 0.25);
+
+            --hero-text: #06212a;
+            --hero-muted: rgba(6, 33, 42, 0.70);
+            --muted-text: rgba(6, 33, 42, 0.62);
+            --table-row-alt: rgba(11, 114, 133, 0.06);
+            --warning-bg: rgba(255, 183, 3, 0.20);
+            --warning-text: #5a3e00;
+
+            --place-1-bg: rgba(255, 183, 3, 0.24);
+            --place-2-bg: rgba(11, 114, 133, 0.10);
+            --place-3-bg: rgba(12, 59, 74, 0.08);
+        }
+
+        html[data-theme="sunset"] {
+            --primary: #4a1f3b;
+            --secondary: #a63a5a;
+            --accent: #ffd166;
+            --light: #fff7f9;
+            --dark: #2a0f21;
+
+            --page-text: #2a0f21;
+            --page-bg: radial-gradient(900px circle at 12% 12%, rgba(255, 209, 102, 0.22) 0%, transparent 52%),
+                       linear-gradient(135deg, #fff0f4 0%, #ffe0e8 38%, #f7f3ff 100%);
+            --card-bg: rgba(255, 255, 255, 0.92);
+            --card-border: rgba(74, 31, 59, 0.16);
+            --table-row-hover: rgba(166, 58, 90, 0.10);
+            --navbar-bg: rgba(42, 15, 33, 0.92);
+            --footer-bg: rgba(42, 15, 33, 0.92);
+            --shadow-strong: rgba(42, 15, 33, 0.22);
+            --shadow-soft: rgba(42, 15, 33, 0.10);
+            --focus-ring: rgba(255, 209, 102, 0.28);
+
+            --hero-text: #2a0f21;
+            --hero-muted: rgba(42, 15, 33, 0.70);
+            --muted-text: rgba(42, 15, 33, 0.62);
+            --table-row-alt: rgba(166, 58, 90, 0.06);
+            --warning-bg: rgba(255, 209, 102, 0.22);
+            --warning-text: #5b3b00;
+
+            --place-1-bg: rgba(255, 209, 102, 0.26);
+            --place-2-bg: rgba(166, 58, 90, 0.10);
+            --place-3-bg: rgba(74, 31, 59, 0.08);
         }
 
         * {
             border-radius: 8px !important;
         }
 
+        html, body, .card, .navbar, footer, .btn, .form-control, .form-select, .alert, table, table thead, table tbody tr {
+            transition: background-color 260ms ease, color 260ms ease, border-color 260ms ease, box-shadow 260ms ease, opacity 260ms ease, transform 260ms ease;
+        }
+
+        html.theme-fade body {
+            animation: themeFade 360ms ease;
+        }
+
+        @keyframes themeFade {
+            from { opacity: 0.75; filter: saturate(0.9) blur(0.2px); }
+            to { opacity: 1; filter: saturate(1) blur(0px); }
+        }
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-            color: #333;
+            background: var(--page-bg);
+            color: var(--page-text);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
         }
 
+        .page-hero-title {
+            color: var(--hero-text) !important;
+        }
+
+        .page-hero-subtitle {
+            color: var(--hero-muted) !important;
+        }
+
+        .text-muted-theme {
+            color: var(--muted-text) !important;
+        }
+
+        .text-muted,
+        .text-body-secondary {
+            color: var(--muted-text) !important;
+        }
+
+        .btn-outline-contrast {
+            background: transparent;
+            color: var(--hero-text);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+        }
+
+        html[data-theme="light"] .btn-outline-contrast,
+        html[data-theme="pistachio"] .btn-outline-contrast,
+        html[data-theme="ocean"] .btn-outline-contrast,
+        html[data-theme="sunset"] .btn-outline-contrast {
+            color: var(--hero-text);
+            border-color: rgba(15, 23, 32, 0.25);
+        }
+
+        .btn-outline-contrast:hover {
+            background: rgba(255, 255, 255, 0.14);
+            transform: translateY(-1px);
+        }
+
+        html[data-theme="light"] .btn-outline-contrast:hover,
+        html[data-theme="pistachio"] .btn-outline-contrast:hover,
+        html[data-theme="ocean"] .btn-outline-contrast:hover,
+        html[data-theme="sunset"] .btn-outline-contrast:hover {
+            background: rgba(15, 23, 32, 0.06);
+        }
+
         .navbar {
-            background: var(--dark);
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            background: var(--navbar-bg);
+            box-shadow: 0 4px 15px var(--shadow-strong);
+            backdrop-filter: blur(10px);
         }
 
         .navbar-brand {
@@ -47,7 +285,7 @@
         .btn-primary:hover {
             background: var(--secondary);
             transform: translateY(-2px);
-            box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 8px 15px var(--shadow-soft);
         }
 
         .btn-accent {
@@ -61,18 +299,18 @@
         .btn-accent:hover {
             background: #e8c547;
             transform: translateY(-2px);
-            box-shadow: 0 8px 15px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 8px 15px var(--shadow-soft);
         }
 
         .card {
-            background: white;
-            border: 1px solid #e0e0e0;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            box-shadow: 0 4px 12px var(--shadow-soft);
             transition: all 0.3s ease;
         }
 
         .card:hover {
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 6px 16px var(--shadow-strong);
         }
 
         .card-header {
@@ -98,13 +336,74 @@
         }
 
         .form-control, .form-select {
-            border: 1px solid #ddd;
+            border: 1px solid var(--card-border);
+            background: var(--card-bg);
+            color: var(--page-text);
             transition: all 0.3s ease;
+        }
+
+        .form-control::placeholder {
+            color: var(--muted-text);
+            opacity: 0.9;
         }
 
         .form-control:focus, .form-select:focus {
             border-color: var(--accent);
-            box-shadow: 0 0 0 0.2rem rgba(212, 175, 55, 0.25);
+            box-shadow: 0 0 0 0.2rem var(--focus-ring);
+        }
+
+        /* Dark theme: kill "white inputs" and "white table cells" */
+        html[data-theme="dark"] .form-control,
+        html[data-theme="dark"] .form-select,
+        html[data-theme="dark"] .input-group-text {
+            background: var(--surface-1);
+            color: var(--page-text);
+            border-color: rgba(255, 255, 255, 0.14);
+        }
+
+        html[data-theme="dark"] .form-control:focus,
+        html[data-theme="dark"] .form-select:focus {
+            background: rgba(0, 0, 0, 0.52);
+        }
+
+        html[data-theme="dark"] .table,
+        html[data-theme="dark"] .table td,
+        html[data-theme="dark"] .table th {
+            color: var(--page-text);
+            border-color: rgba(255, 255, 255, 0.10);
+        }
+
+        html[data-theme="dark"] .table thead th {
+            background: var(--surface-2) !important;
+            color: #fff !important;
+        }
+
+        /* Apply orange hover ONLY to explicit hover tables */
+        html[data-theme="dark"] .table.table-hover tbody td {
+            background: var(--surface-1);
+            transition: background-color 260ms ease, color 260ms ease;
+        }
+
+        html[data-theme="dark"] .table.table-hover tbody tr:hover td {
+            background: var(--hover-accent);
+            color: var(--hover-accent-text);
+        }
+
+        html[data-theme="dark"] .table.table-hover tbody tr:hover a {
+            color: var(--hover-accent-text) !important;
+        }
+
+        html[data-theme="dark"] .link-body-emphasis,
+        html[data-theme="dark"] .table a {
+            color: var(--page-text) !important;
+        }
+
+        .card,
+        .card-body,
+        .card-text,
+        .card-title,
+        .form-label {
+            color: var(--page-text);
         }
 
         .alert {
@@ -136,7 +435,7 @@
         }
 
         table tbody tr:hover {
-            background: #f0f0f0;
+            background: var(--table-row-hover);
         }
 
         .nav-link {
@@ -149,7 +448,7 @@
         }
 
         footer {
-            background: var(--dark);
+            background: var(--footer-bg);
             color: white;
             text-align: center;
             padding: 1rem;
@@ -167,10 +466,95 @@
                 transform: translateY(0);
             }
         }
+
+        /* ===== Theme switcher ===== */
+        .theme-switcher-fab {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            z-index: 1055;
+        }
+
+        .theme-switcher-fab .btn {
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 10px 24px var(--shadow-strong);
+            backdrop-filter: blur(10px);
+        }
+
+        .theme-switcher-fab .dropdown-menu {
+            min-width: 220px;
+            border: 1px solid var(--card-border);
+            background: var(--card-bg);
+            box-shadow: 0 16px 40px var(--shadow-strong);
+            padding: 0.5rem;
+        }
+
+        .theme-option {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.65rem;
+            border-radius: 10px !important;
+            cursor: pointer;
+            user-select: none;
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .theme-option:hover {
+            background: var(--table-row-hover);
+        }
+
+        .theme-swatch {
+            width: 18px;
+            height: 18px;
+            border-radius: 6px !important;
+            border: 1px solid rgba(0, 0, 0, 0.12);
+            box-shadow: 0 3px 8px var(--shadow-soft);
+            flex: 0 0 auto;
+        }
+
+        html[data-theme="dark"] .theme-swatch {
+            border-color: rgba(255, 255, 255, 0.18);
+        }
+
+        .theme-mobile-bar {
+            position: sticky;
+            top: 0;
+            z-index: 1050;
+            background: var(--navbar-bg);
+            color: white;
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .theme-mobile-bar .theme-label {
+            color: rgba(255,255,255,0.85);
+            font-size: 0.85rem;
+        }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
 <body>
+    <!-- Mobile: theme picker in top bar -->
+    <div class="theme-mobile-bar d-md-none">
+        <div class="container-fluid py-2">
+            <div class="d-flex align-items-center justify-content-between gap-2">
+                <div class="fw-bold" style="color: var(--accent);">⚔️ Дзюдо Ката</div>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="theme-label">Тема</span>
+                    <select class="form-select form-select-sm" id="themeSelectMobile" style="max-width: 190px;">
+                        <option value="default">Стандартная</option>
+                        <option value="dark">Тёмная</option>
+                        <option value="light">Светлая</option>
+                        <option value="pistachio">Фисташковая</option>
+                        <option value="ocean">Океан</option>
+                        <option value="sunset">Закат</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
     {% if session.get('admin') %}
     <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container-fluid">
@@ -207,7 +591,89 @@
         © 2026 Система судейства Дзюдо Ката. Все права защищены.
     </footer>
 
+    <!-- Desktop: floating theme switcher -->
+    <div class="theme-switcher-fab d-none d-md-block">
+        <div class="dropdown">
+            <button class="btn btn-primary dropdown-toggle" type="button" id="themeDropdownBtn" data-bs-toggle="dropdown" aria-expanded="false">
+                🎨 Тема
+            </button>
+            <div class="dropdown-menu dropdown-menu-end" aria-labelledby="themeDropdownBtn">
+                <div class="theme-option" data-theme="default">
+                    <span class="theme-swatch" style="background: linear-gradient(135deg, #1a3d5c 0%, #2d5a7b 100%);"></span>
+                    <span>Стандартная</span>
+                </div>
+                <div class="theme-option" data-theme="dark">
+                    <span class="theme-swatch" style="background: linear-gradient(135deg, #0b1320 0%, #121f33 100%);"></span>
+                    <span>Тёмная</span>
+                </div>
+                <div class="theme-option" data-theme="light">
+                    <span class="theme-swatch" style="background: linear-gradient(135deg, #f7fbff 0%, #eef4ff 100%);"></span>
+                    <span>Светлая</span>
+                </div>
+                <div class="theme-option" data-theme="pistachio">
+                    <span class="theme-swatch" style="background: linear-gradient(135deg, #e8f6ee 0%, #cfeedd 100%);"></span>
+                    <span>Фисташковая</span>
+                </div>
+                <div class="theme-option" data-theme="ocean">
+                    <span class="theme-swatch" style="background: linear-gradient(135deg, #e9f8ff 0%, #c8f0ff 100%);"></span>
+                    <span>Океан</span>
+                </div>
+                <div class="theme-option" data-theme="sunset">
+                    <span class="theme-swatch" style="background: linear-gradient(135deg, #fff0f4 0%, #f7f3ff 100%);"></span>
+                    <span>Закат</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="{{ url_for('static', filename='bootstrap/bootstrap.bundle.min.js') }}"></script>
+    <script>
+        (function () {
+            const STORAGE_KEY = 'kata_judge_theme';
+            const html = document.documentElement;
+            const desktopOptions = Array.from(document.querySelectorAll('.theme-option[data-theme]'));
+            const mobileSelect = document.getElementById('themeSelectMobile');
+
+            function getTheme() {
+                const saved = localStorage.getItem(STORAGE_KEY);
+                return saved || 'default';
+            }
+
+            function setTheme(nextTheme) {
+                const theme = nextTheme || 'default';
+                localStorage.setItem(STORAGE_KEY, theme);
+
+                // Trigger animation
+                html.classList.remove('theme-fade');
+                void html.offsetWidth; // reflow
+                html.classList.add('theme-fade');
+                window.setTimeout(() => html.classList.remove('theme-fade'), 420);
+
+                html.setAttribute('data-theme', theme);
+
+                if (mobileSelect && mobileSelect.value !== theme) {
+                    mobileSelect.value = theme;
+                }
+            }
+
+            // Init theme
+            setTheme(getTheme());
+
+            // Desktop clicks
+            desktopOptions.forEach((el) => {
+                el.addEventListener('click', () => {
+                    setTheme(el.getAttribute('data-theme'));
+                });
+            });
+
+            // Mobile select
+            if (mobileSelect) {
+                mobileSelect.addEventListener('change', (e) => {
+                    setTheme(e.target.value);
+                });
+            }
+        })();
+    </script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

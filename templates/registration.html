@@ -8,25 +8,35 @@
     .table-responsive {
         border-radius: 12px;
         overflow: visible !important;
-        border: 1px solid #dee2e6;
-        background: white;
+        border: 1px solid var(--card-border);
+        background: var(--card-bg);
+    }
+
+    table thead {
+        background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%) !important;
     }
 
     table th {
-        background: #2c3e50 !important;
+        background: transparent !important;
         color: white !important;
         font-weight: 600;
         padding: 0.75rem !important;
         font-size: 0.85rem;
         text-transform: uppercase;
+        border-color: transparent !important; /* монолитная шапка */
     }
 
     table td {
         padding: 0.5rem !important;
         vertical-align: middle;
-        border-bottom: 1px solid #eee;
+        border-bottom: 1px solid var(--card-border);
         position: relative;
         overflow: visible;
+    }
+
+    /* чтобы фиксированная кнопка не перекрывала контент */
+    .container-main {
+        padding-bottom: 110px;
     }
 
     .form-control-sm {
@@ -43,7 +53,7 @@
     }
 
     .pair-badge {
-        background: #34495e;
+        background: var(--primary);
         color: white;
         font-weight: bold;
         text-align: center;
@@ -53,7 +63,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        box-shadow: 0 2px 4px var(--shadow-soft);
     }
 
     .btn-delete-pair {
@@ -91,6 +101,43 @@
     .role-tori { background: #ebf5ff; color: #2980b9; border: 1px solid #bae3ff; }
     .role-uke { background: #fff5f5; color: #c53030; border: 1px solid #fed7d7; }
 
+    html[data-theme="dark"] .pair-badge {
+        background: rgba(0,0,0,0.55);
+        border: 1px solid rgba(255,255,255,0.16);
+        color: #fff;
+    }
+
+    html[data-theme="dark"] .role-tori {
+        background: rgba(52, 152, 219, 0.16);
+        color: #bfe6ff;
+        border: 1px solid rgba(52, 152, 219, 0.28);
+    }
+
+    html[data-theme="dark"] .role-uke {
+        background: rgba(231, 76, 60, 0.16);
+        color: #ffd1cc;
+        border: 1px solid rgba(231, 76, 60, 0.28);
+    }
+
+    /* Dark theme: make rows monolithic (no cell patches) */
+    html[data-theme="dark"] .table-responsive table tbody tr {
+        background: rgba(0,0,0,0.40);
+    }
+    html[data-theme="dark"] .table-responsive table tbody td {
+        background: transparent;
+    }
+
+    /* Hide number spinners (Year column) */
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+    }
+    input[type="number"] {
+        -moz-appearance: textfield;
+        appearance: textfield;
+    }
+
     /* ФИКС: Автодополнение внутри input-group (судьи) */
     .input-group > .autocomplete-wrapper {
         flex: 1 1 auto;
@@ -110,13 +157,13 @@
         top: 100%; /* Ровно под инпутом */
         left: 0;
         width: 100%; /* Ширина как у инпута */
-        background: white;
-        border: 1px solid #ddd;
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
         border-radius: 0 0 8px 8px;
         max-height: 200px;
         overflow-y: auto;
         z-index: 9999; /* Поверх всех элементов */
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        box-shadow: 0 4px 12px var(--shadow-soft);
         display: none;
     }
 
@@ -127,8 +174,8 @@
     }
 
     .autocomplete-item:hover, .autocomplete-item.highlighted {
-        background: #f8f9fa;
-        color: #007bff;
+        background: var(--table-row-hover);
+        color: var(--primary);
     }
 
     .fade-in { animation: fadeIn 0.3s ease-out; }
@@ -139,17 +186,17 @@
 {% block content %}
 <div class="row mb-4 align-items-center">
     <div class="col-md-8">
-        <h2 class="text-white fw-bold mb-0">👥 Регистрация: {{ kata_name }}</h2>
+        <h2 class="page-hero-title fw-bold mb-0">👥 Регистрация: {{ kata_name }}</h2>
     </div>
     <div class="col-md-4 text-end">
-        <a href="" id="backLink" class="btn btn-outline-light">← Назад к списку</a>
+        <a href="" id="backLink" class="btn btn-outline-contrast">← Назад к списку</a>
     </div>
 </div>
 
 <form method="POST" id="registrationForm">
     <div class="card mb-4 border-0 shadow-sm">
-        <div class="card-header bg-white py-3">
-            <h5 class="mb-0 fw-bold text-white">👥 Участники (Пары)</h5>
+        <div class="card-header py-3">
+            <h5 class="mb-0 fw-bold">👥 Участники (Пары)</h5>
         </div>
         <div class="card-body p-0">
             <div class="p-3">
@@ -160,7 +207,7 @@
                     <thead>
                         <tr>
                             <th class="text-center" style="width: 70px;">№</th>
-                            <th class="text-center" style="width: 80px;">Роль</th>
+                            <th class="text-center" style="width: 95px;">Роль</th>
                             <th>ФИО Участника</th>
                             <th style="width: 100px;">Год</th>
                             <th style="width: 70px;">Разряд</th>
@@ -177,8 +224,8 @@
     </div>
 
     <div class="card mb-5 border-0 shadow-sm">
-        <div class="card-header bg-white py-3">
-            <h5 class="mb-0 fw-bold text-white">⚖️ Судейская коллегия</h5>
+        <div class="card-header py-3">
+            <h5 class="mb-0 fw-bold">⚖️ Судейская коллегия</h5>
         </div>
         <div class="card-body">
             <div class="row g-3" id="judgesList">
@@ -186,7 +233,7 @@
         </div>
     </div>
 
-    <div class="fixed-bottom bg-white border-top p-3 shadow-lg">
+    <div class="fixed-bottom border-top p-3 shadow-lg" style="background: var(--card-bg); border-color: var(--card-border) !important;">
         <div class="container d-flex justify-content-center">
             <button type="submit" class="btn btn-primary btn-lg px-5 rounded-pill shadow">
                 ✅ Сохранить изменения
@@ -466,7 +513,7 @@ function initJudges() {
         col.className = 'col-md-4 mb-2';
         col.innerHTML = `
             <div class="input-group">
-                <span class="input-group-text bg-dark text-white border-0 fw-bold" style="width: 45px; justify-content: center;">${i}</span>
+                <span class="input-group-text border-0 fw-bold" style="width: 45px; justify-content: center; background: var(--primary); color: #fff;">${i}</span>
                 <div class="autocomplete-wrapper">
                     <input type="text" name="judge_${i}_name" class="form-control ac-input" placeholder="ФИО Судьи" autocomplete="off">
                     <div class="autocomplete-results"></div>
