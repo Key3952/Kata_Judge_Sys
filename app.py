@@ -953,6 +953,12 @@ def save_judge_action(comp_name, kata_key):
 
     if not judge or not pos or not pair:
         return jsonify({'error': 'Missing data'}), 400
+    try:
+        pos_int = int(pos)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid judge place'}), 400
+    if pos_int < 1 or pos_int > 5:
+        return jsonify({'error': 'Для оценивания используются места 1..5'}), 400
 
     comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
     stage = stage_for_ops(comp_path, kata_key)
@@ -983,7 +989,7 @@ def save_judge_action(comp_name, kata_key):
             scores.append(max(0, min(10, score)))
 
     # Сохраняем файл
-    protocol_path = CompetitionCSVManager.get_stage_protocol_path(comp_path, kata_key, stage, judge, int(pos), tori_fio, uke_fio)
+    protocol_path = CompetitionCSVManager.get_stage_protocol_path(comp_path, kata_key, stage, judge, pos_int, tori_fio, uke_fio)
 
     os.makedirs(os.path.dirname(protocol_path), exist_ok=True)
 
@@ -1028,10 +1034,8 @@ def save_judge_action(comp_name, kata_key):
             pair_entry['Уке'] = encode_participant_for_protocol(pair_obj, 'Уке')
         
         # Обновляем оценку судьи
-        p_int = int(pos)
-        if 1 <= p_int <= 5:
-            judge_col = f'Судья {p_int}'
-            pair_entry[judge_col] = total
+        judge_col = f'Судья {pos_int}'
+        pair_entry[judge_col] = total
         final = _compute_final_from_entry(pair_entry, meta['effective_positions'])
         pair_entry['Сумма'] = f'{final:.1f}' if final is not None else ''
         
@@ -1125,7 +1129,7 @@ def judge_page(comp_name, kata_key):
     judges_file = os.path.join(disc_path, 'judges_list.csv')
     judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
     meta = judge_positions_meta(judges)
-    judge_positions = meta['positions']
+    judge_positions = [p for p in meta['effective_positions'] if 1 <= p <= 5]
 
     return render_template('judge_form.html',
                          comp_name=comp_name,
@@ -1170,7 +1174,7 @@ def tablo(comp_name, kata_key):
     judges_file = os.path.join(disc_path, 'judges_list.csv')
     judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
     meta = judge_positions_meta(judges)
-    effective_positions = meta['effective_positions']
+    effective_positions = [p for p in meta['effective_positions'] if 1 <= p <= 5]
     final_protocol_path = stage_files['final_protocol']
     
     def build_results_from_pairs():
