@@ -106,8 +106,11 @@
 {% block content %}
 <div class="mb-4">
     <h2 class="page-hero-title fw-bold">⚖️ Судейский протокол</h2>
-    <p class="page-hero-subtitle mb-0">{{ comp_name }} | {{ kata_name }}</p>
+    <p class="page-hero-subtitle mb-0">{{ comp_name }} | {{ kata_name }} | Этап: {{ 'Финал' if stage == 'final' else 'Предварительные встречи' }}</p>
 </div>
+{% if stage_error %}
+<div class="alert alert-danger">{{ stage_error }}</div>
+{% endif %}
 
 <form id="judgeForm">
     <div class="header-section">
@@ -125,7 +128,7 @@
                 <label class="form-label">🏆 Место:</label>
                 <select id="judge_position" class="form-select form-select-lg" required>
                     <option value="">-- № Места --</option>
-                    {% for i in range(1, 6) %}<option value="{{ i }}">Место {{ i }}</option>{% endfor %}
+                    {% for i in judge_positions %}<option value="{{ i }}">Место {{ i }}</option>{% endfor %}
                 </select>
             </div>
             <div class="col-md-4">
@@ -216,19 +219,48 @@ let state = {
     techniques: []
 };
 
+function defaultTechniqueState() {
+    return {
+        m1: 0,
+        m2: 0,
+        med: 0,
+        big: 0,
+        c_plus: 0,
+        c_minus: 0,
+        forgotten: false
+    };
+}
+
+function normalizeDetail(raw) {
+    const r = raw && typeof raw === 'object' ? raw : {};
+    return {
+        m1: Number(r.m1) || 0,
+        m2: Number(r.m2) || 0,
+        med: Number(r.med) || 0,
+        big: Number(r.big) || 0,
+        c_plus: r.c_plus !== undefined && r.c_plus !== null ? Number(r.c_plus) : 0,
+        c_minus: Number(r.c_minus) || 0,
+        forgotten: !!r.forgotten
+    };
+}
+
+function resetScoringUI() {
+    state.techniques = techniques.map(() => defaultTechniqueState());
+    document.querySelectorAll('#scoringContainer tbody tr').forEach((tr) => {
+        tr.querySelectorAll('.penalty-btn').forEach((btn) => btn.classList.remove('active'));
+        const cb = tr.querySelector('.forgotten-checkbox');
+        if (cb) cb.checked = false;
+        const sc = tr.querySelector('.score-cell');
+        if (sc) sc.textContent = '10.0';
+    });
+    const fs = document.getElementById('finalScore');
+    if (fs) fs.textContent = '0.0';
+}
+
 // Инициализация state при загрузке страницы
 document.addEventListener('DOMContentLoaded', function() {
-    // Инициализируем state.techniques с правильным количеством элементов
     techniques.forEach((tech, idx) => {
-        state.techniques[idx] = {
-            m1: 0,
-            m2: 0,
-            med: 0,
-            big: 0,
-            c_plus: 0,
-            c_minus: 0,
-            forgotten: false
-        };
+        state.techniques[idx] = defaultTechniqueState();
     });
 });
 
@@ -263,21 +295,6 @@ function confirmSelection() {
     
     // Показываем блок оценок
     toggleUI();
-    
-    // Инициализируем state.techniques при первом подтверждении выбора
-    if (state.techniques.length === 0) {
-        techniques.forEach((tech, idx) => {
-            state.techniques[idx] = {
-                m1: 0,
-                m2: 0,
-                med: 0,
-                big: 0,
-                c_plus: 0,
-                c_minus: 0,
-                forgotten: false
-            };
-        });
-    }
 }
 
 // Функция для переключения видимости блока оценок
@@ -388,40 +405,55 @@ async function forceSave() {
 }
 
 function loadExistingScores() {
+    resetScoringUI();
+
     const judge = document.getElementById('judge_name').value;
     const pos = document.getElementById('judge_position').value;
     const pair = document.getElementById('pair_number').value;
     const selectedPair = pairs_data.find(p => p['номер пары'] == pair);
-    if (selectedPair) {
-        const tori = selectedPair['Тори_ФИО'];
-        const uke = selectedPair['Уке_ФИО'];
-        fetch(`/api/{{ comp_name }}/{{ kata_key }}/get-judge-scores/${judge}/${pos}/${tori}/${uke}`)
-            .then(r => r.json())
-            .then(details => {
-                if (Object.keys(details).length > 0) {
-                    // Apply details to state and UI
-                    document.querySelectorAll('tbody tr').forEach((tr, idx) => {
-                        const tech = techniques[idx];
-                        const detail = details[tech] || {};
-                        state.techniques[idx] = detail;
-
-                        // Update checkboxes
-                        const forgottenCb = tr.querySelector('.forgotten-checkbox');
-                        forgottenCb.checked = detail.forgotten || false;
-
-                        // Update buttons
-                        const buttons = tr.querySelectorAll('.penalty-btn');
-                        buttons.forEach(btn => {
-                            const key = btn.getAttribute('onclick').match(/tgl\(this, '(\w+)'\)/)[1];
-                            const isActive = detail[key] > 0;
-                            btn.classList.toggle('active', isActive);
-                        });
-                    });
-                    calc(); // Recalc total
-                }
-            })
-            .catch(e => console.log('No existing scores'));
+    if (!selectedPair || !judge || !pos) {
+        calc();
+        return;
     }
+    const tori = selectedPair['Тори_ФИО'];
+    const uke = selectedPair['Уке_ФИО'];
+    const url = `/api/{{ comp_name }}/{{ kata_key }}/get-judge-scores/${encodeURIComponent(judge)}/${pos}/${encodeURIComponent(tori)}/${encodeURIComponent(uke)}`;
+    fetch(url)
+        .then(r => r.json())
+        .then(details => {
+            if (!details || Object.keys(details).length === 0) {
+                calc();
+                return;
+            }
+            document.querySelectorAll('#scoringContainer tbody tr').forEach((tr, idx) => {
+                const tech = techniques[idx];
+                const detail = normalizeDetail(details[tech]);
+
+                state.techniques[idx] = detail;
+
+                const forgottenCb = tr.querySelector('.forgotten-checkbox');
+                if (forgottenCb) forgottenCb.checked = detail.forgotten;
+
+                tr.querySelectorAll('.penalty-btn').forEach(btn => {
+                    const m = btn.getAttribute('onclick').match(/tgl\(this, '(\w+)'\)/);
+                    if (!m) return;
+                    const key = m[1];
+                    const v = detail[key];
+                    let isActive = false;
+                    if (key === 'c_plus' || key === 'c_minus') {
+                        isActive = v !== undefined && v !== null && Number(v) !== 0;
+                    } else {
+                        isActive = typeof v === 'number' && v > 0;
+                    }
+                    btn.classList.toggle('active', isActive);
+                });
+            });
+            calc();
+        })
+        .catch(e => {
+            console.log('No existing scores', e);
+            calc();
+        });
 }
 </script>
 {% endblock %}

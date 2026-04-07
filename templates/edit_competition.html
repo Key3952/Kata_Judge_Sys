@@ -2,6 +2,23 @@
 
 {% block title %}Редактор Соревнования{% endblock %}
 
+{% block extra_css %}
+<style>
+    .disc-table {
+        border-collapse: collapse !important;
+    }
+    .disc-table thead tr {
+        background: transparent !important;
+    }
+    .disc-table thead th {
+        background: var(--card-bg) !important;
+        color: var(--page-text) !important;
+        border-bottom: 1px solid var(--card-border) !important;
+        border-radius: 0 !important;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="row mb-4">
     <div class="col-md-8">
@@ -25,12 +42,14 @@
             <div class="card-body">
                 {% if disciplines %}
                 <div class="table-responsive">
-                    <table class="table table-sm table-hover">
+                    <table class="table table-sm table-hover disc-table">
                         <thead>
                             <tr>
                                 <th>Дисциплина</th>
                                 <th style="width: 80px;">Пар</th>
-                                <th style="width: 150px;">Действия</th>
+                                <th style="width: 190px;">Этап</th>
+                                <th style="width: 170px;">Периоды</th>
+                                <th style="width: 220px;">Действия</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -38,6 +57,22 @@
                             <tr>
                                 <td><a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}" target="_blank" class="link-body-emphasis"><strong>{{ disc.name }}</strong></a></td>
                                 <td>{{ disc.pair_count }}</td>
+                                <td>
+                                    <div class="small">
+                                        <div><strong>{{ 'Финал' if disc.stage.current_stage == 'final' else 'Предварительные встречи' }}</strong></div>
+                                        <div class="text-muted">режим: {{ disc.stage.mode }}, статус: {{ disc.stage.status }}, top: {{ disc.stage.final_top_n }}</div>
+                                    </div>
+                                </td>
+                                <td>
+                                    <button type="button" onclick="stageAction('{{ comp_name }}', '{{ disc.key }}', 'set_prelim')"
+                                            class="btn btn-sm btn-outline-warning" title="Открыть предварительные встречи">P</button>
+                                    <button type="button" onclick="stageAction('{{ comp_name }}', '{{ disc.key }}', 'open_final')"
+                                            class="btn btn-sm btn-outline-success" title="Открыть финал из TOP-N">F</button>
+                                    <button type="button" onclick="stageAction('{{ comp_name }}', '{{ disc.key }}', 'set_final_only')"
+                                            class="btn btn-sm btn-outline-primary" title="Сразу финал">S</button>
+                                    <button type="button" onclick="stageAction('{{ comp_name }}', '{{ disc.key }}', 'close_stage')"
+                                            class="btn btn-sm btn-outline-dark" title="Закрыть текущий этап">⛔</button>
+                                </td>
                                 <td>
                                     <a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}"
                                        target="_blank" class="btn btn-sm btn-primary" title="Откроется в новой вкладке">
@@ -47,6 +82,10 @@
                                        class="btn btn-sm btn-info">
                                         📊
                                     </a>
+                                    <button type="button" onclick="generateProtocols('{{ comp_name }}', '{{ disc.key }}', this)"
+                                            class="btn btn-sm btn-outline-secondary" title="Сгенерировать протоколы по этой дисциплине">
+                                        📄
+                                    </button>
                                     <button onclick="removeDiscipline('{{ comp_name }}', '{{ disc.key }}')"
                                             class="btn btn-sm btn-danger">
                                         🗑️
@@ -99,6 +138,48 @@
                 <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary w-100">
                     ← Вернуться
                 </a>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0">📑 Протоколы</h5>
+                <button type="button" id="btnGenAllProtocols" onclick="generateProtocols('{{ comp_name }}', null, this)"
+                        class="btn btn-sm btn-accent">
+                    Сгенерировать все
+                </button>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">
+                    В папке каждой дисциплины: <code>main_protocol.xlsx</code>, <code>details_protocol.xlsx</code> и PDF.
+                    В <code>results/</code> у соревнования — сводные итоговые Excel и PDF.
+                </p>
+                <div id="protocolStatusBlock" class="small">
+                    {% if protocol_status.disciplines %}
+                    <ul class="list-unstyled mb-2" id="protocolStatusList">
+                        {% for ps in protocol_status.disciplines %}
+                        <li class="mb-1" data-disc="{{ ps.key }}">
+                            <strong>{{ ps.key }}</strong>:
+                            пар в финале {{ ps.pairs_registered }},
+                            с суммой {{ ps.final_with_total }},
+                            файлов судейских {{ ps.judge_protocol_files }}
+                            {% if ps.ready %}<span class="text-success">✓</span>{% else %}<span class="text-warning">○</span>{% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    <p class="mb-0">
+                        Общий статус:
+                        {% if protocol_status.overall_ready %}
+                        <span class="text-success">есть итоги в финальном протоколе</span>
+                        {% else %}
+                        <span class="text-warning">нет строк с суммой в финальном протоколе</span>
+                        {% endif %}
+                    </p>
+                    {% else %}
+                    <p class="text-muted mb-0">Нет дисциплин — нечего экспортировать.</p>
+                    {% endif %}
+                </div>
+                <p id="protocolGenMessage" class="small mt-2 mb-0 text-muted"></p>
             </div>
         </div>
     </div>
@@ -176,6 +257,106 @@ function removeDiscipline(compName, disciplineKey) {
             row.style.transform = 'translateX(0)';
             console.error('Delete failed:', e);
         });
+    }
+}
+
+function generateProtocols(compName, disciplineKey, triggerEl) {
+    const msg = document.getElementById('protocolGenMessage');
+    const busy = triggerEl || null;
+    if (busy) {
+        busy.disabled = true;
+    }
+    if (msg) {
+        msg.textContent = 'Генерация…';
+    }
+
+    const body = disciplineKey ? JSON.stringify({ discipline_key: disciplineKey }) : JSON.stringify({});
+
+    fetch(`/admin/${compName}/generate-protocols`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+    })
+        .then((r) => r.json())
+        .then((data) => {
+            if (data.success) {
+                if (msg) {
+                    msg.textContent = 'Готово: файлы обновлены.';
+                }
+                if (data.readiness) {
+                    refreshProtocolStatusUI(data.readiness);
+                }
+            } else {
+                if (msg) {
+                    msg.textContent = data.message || 'Ошибка генерации';
+                }
+            }
+        })
+        .catch((e) => {
+            if (msg) {
+                msg.textContent = 'Ошибка сети: ' + e;
+            }
+        })
+        .finally(() => {
+            if (busy) {
+                busy.disabled = false;
+            }
+        });
+}
+
+function stageAction(compName, disciplineKey, action) {
+    const msg = document.getElementById('protocolGenMessage');
+    let payload = { action };
+    if (action === 'open_final') {
+        const userN = prompt('Сколько пар перевести в финал?', '3');
+        if (userN === null) return;
+        const topN = parseInt(userN, 10);
+        if (!topN || topN < 1) {
+            alert('Введите корректное число');
+            return;
+        }
+        payload.top_n = topN;
+    }
+    fetch(`/admin/${compName}/${disciplineKey}/stage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    })
+        .then((r) => r.json())
+        .then((data) => {
+            if (data.success) {
+                if (msg) msg.textContent = 'Этап обновлен';
+                setTimeout(() => location.reload(), 350);
+            } else {
+                alert(data.error || 'Ошибка смены этапа');
+            }
+        })
+        .catch((e) => alert('Ошибка сети: ' + e));
+}
+
+function refreshProtocolStatusUI(status) {
+    const list = document.getElementById('protocolStatusList');
+    if (!list || !status.disciplines) {
+        return;
+    }
+    list.innerHTML = '';
+    status.disciplines.forEach((ps) => {
+        const li = document.createElement('li');
+        li.className = 'mb-1';
+        li.dataset.disc = ps.key;
+        const mark = ps.ready
+            ? '<span class="text-success">✓</span>'
+            : '<span class="text-warning">○</span>';
+        li.innerHTML = `<strong>${ps.key}</strong>: пар в финале ${ps.pairs_registered}, с суммой ${ps.final_with_total}, файлов судейских ${ps.judge_protocol_files} ${mark}`;
+        list.appendChild(li);
+    });
+    const overall = document.querySelector('#protocolStatusBlock p.mb-0');
+    if (overall && status.overall_ready !== undefined) {
+        overall.innerHTML =
+            'Общий статус: ' +
+            (status.overall_ready
+                ? '<span class="text-success">есть итоги в финальном протоколе</span>'
+                : '<span class="text-warning">нет строк с суммой в финальном протоколе</span>');
     }
 }
 

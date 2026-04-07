@@ -214,7 +214,7 @@
                             <th class="text-center" style="width: 118px;">Роль</th>
                             <th>ФИО Участника</th>
                             <th style="width: 100px;">Год</th>
-                            <th style="width: 78px;">Разряд<br><small class="fw-normal opacity-75">1 дан, кю…</small></th>
+                            <th style="width: 78px;">Разряд</th>
                             <th style="width: 70px;">КЮ</th>
                             <th>СШ (Клуб)</th>
                             <th>Тренер</th>
@@ -232,6 +232,9 @@
             <h5 class="mb-0 fw-bold">⚖️ Судейская коллегия</h5>
         </div>
         <div class="card-body">
+            <div class="mb-3">
+                <button type="button" class="btn btn-outline-primary btn-sm" onclick="addJudgeRow()">+ Добавить судью</button>
+            </div>
             <div class="row g-3" id="judgesList">
                 </div>
         </div>
@@ -248,6 +251,7 @@
 
 <script>
 let pairCounter = 0;
+let judgeCounter = 0;
 
 function createInput(name, placeholder, type="text", isAutocomplete=false) {
     const wrapper = document.createElement('div');
@@ -609,23 +613,66 @@ function attachACJudges(input) {
     });
 }
 
-function initJudges() {
+function renderJudgeRow(index, value = '') {
+    const col = document.createElement('div');
+    col.className = 'col-md-4 mb-2';
+    col.innerHTML = `
+        <div class="input-group">
+            <span class="input-group-text border-0 fw-bold" style="width: 45px; justify-content: center; background: var(--primary); color: #fff;">${index}</span>
+            <div class="autocomplete-wrapper">
+                <input type="text" name="judge_${index}_name" class="form-control ac-input" placeholder="ФИО Судьи" autocomplete="off" value="${value.replace(/"/g, '&quot;')}">
+                <div class="autocomplete-results"></div>
+            </div>
+            <button type="button" class="btn btn-outline-danger" title="Удалить строку судьи" onclick="removeJudgeRow(this)">✕</button>
+        </div>`;
+    attachACJudges(col.querySelector('input'));
+    return col;
+}
+
+function addJudgeRow(value = '') {
+    const container = document.getElementById('judgesList');
+    if (!container) return;
+    judgeCounter += 1;
+    container.appendChild(renderJudgeRow(judgeCounter, value));
+}
+
+function reindexJudges() {
+    const container = document.getElementById('judgesList');
+    if (!container) return;
+    const rows = Array.from(container.querySelectorAll('.col-md-4.mb-2'));
+    rows.forEach((row, idx) => {
+        const next = idx + 1;
+        const badge = row.querySelector('.input-group-text');
+        const input = row.querySelector('input[name^="judge_"][name$="_name"]');
+        if (badge) badge.textContent = String(next);
+        if (input) input.name = `judge_${next}_name`;
+    });
+    judgeCounter = rows.length;
+}
+
+function removeJudgeRow(btn) {
+    const container = document.getElementById('judgesList');
+    if (!container) return;
+    const rows = container.querySelectorAll('.col-md-4.mb-2');
+    if (rows.length <= 1) {
+        alert('Должна остаться хотя бы одна строка судьи');
+        return;
+    }
+    const row = btn.closest('.col-md-4.mb-2');
+    if (row) row.remove();
+    reindexJudges();
+}
+
+function initJudges(existing = []) {
     const container = document.getElementById('judgesList');
     if (!container) return;
     container.innerHTML = '';
-    for (let i = 1; i <= 5; i++) {
-        const col = document.createElement('div');
-        col.className = 'col-md-4 mb-2';
-        col.innerHTML = `
-            <div class="input-group">
-                <span class="input-group-text border-0 fw-bold" style="width: 45px; justify-content: center; background: var(--primary); color: #fff;">${i}</span>
-                <div class="autocomplete-wrapper">
-                    <input type="text" name="judge_${i}_name" class="form-control ac-input" placeholder="ФИО Судьи" autocomplete="off">
-                    <div class="autocomplete-results"></div>
-                </div>
-            </div>`;
-        container.appendChild(col);
-        attachACJudges(col.querySelector('input'));
+    judgeCounter = 0;
+    const sorted = [...existing].sort((a, b) => Number(a['место'] || 0) - Number(b['место'] || 0));
+    if (sorted.length) {
+        sorted.forEach((j) => addJudgeRow(j['ФИО'] || ''));
+    } else {
+        for (let i = 0; i < 5; i++) addJudgeRow();
     }
 }
 
@@ -654,25 +701,26 @@ function autosave() {
 
     // Проверяем имена судей через API перед сохранением
     let validationPromises = [];
-    for (let i = 1; i <= 5; i++) {
-        const judgeName = data[`judge_${i}_name`]?.trim() || '';
+    Object.keys(data).forEach((k) => {
+        if (!k.startsWith('judge_') || !k.endsWith('_name')) return;
+        const judgeName = data[k]?.trim() || '';
         if (judgeName) {
             validationPromises.push(
                 isValidJudgeName(judgeName).then(isValid => ({
-                    index: i,
+                    key: k,
                     isValid: isValid,
                     name: judgeName
                 }))
             );
         }
-    }
+    });
 
     Promise.all(validationPromises).then(results => {
         // Очищаем невалидные имена судей перед сохранением
         results.forEach(result => {
             if (!result.isValid) {
-                console.warn(`Судья ${result.index} (${result.name}) не найден в списке - не сохраняется`);
-                data[`judge_${result.index}_name`] = '';
+                console.warn(`Судья (${result.name}) не найден в списке - не сохраняется`);
+                data[result.key] = '';
             }
         });
 
@@ -692,8 +740,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const backLink = document.getElementById('backLink');
     if (backLink) backLink.href = `/admin/${comp_name}`;
 
-    initJudges();
-
     // Autosave every 2.5 seconds
     setInterval(autosave, 2500);
 
@@ -704,15 +750,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.existing_pairs && data.existing_pairs.length > 0) {
                 data.existing_pairs.forEach(p => addPair(p));
             }
-            if (data.existing_judges) {
-                data.existing_judges.forEach(j => {
-                    const input = document.querySelector(`[name="judge_${j['место']}_name"]`);
-                    if (input) input.value = j['ФИО'];
-                });
-            }
+            initJudges(data.existing_judges || []);
             addPair(); // Всегда одна пустая строка в конце
         })
-        .catch(() => addPair());
+        .catch(() => { initJudges(); addPair(); });
 
     // Умное добавление строк
     const pairsList = document.getElementById('pairsList');

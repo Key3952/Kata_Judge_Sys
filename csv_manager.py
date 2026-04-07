@@ -7,6 +7,19 @@ from typing import List, Dict, Optional
 
 class CSVManager:
     """Менеджер для работы с CSV файлами участников и судей"""
+
+    @staticmethod
+    def _read_text_with_fallback(filepath: str) -> str:
+        """Читает текстовый файл с fallback по кодировкам."""
+        with open(filepath, 'rb') as fb:
+            raw = fb.read()
+        for enc in ('utf-8-sig', 'utf-8', 'cp1251', 'latin-1'):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        # Крайний случай: не падаем, а заменяем битые символы
+        return raw.decode('utf-8', errors='replace')
     
     @staticmethod
     def ensure_csv_exists(filepath: str, headers: List[str]) -> None:
@@ -23,19 +36,37 @@ class CSVManager:
             return []
         
         rows = []
-        with open(filepath, 'r', encoding='utf-8') as f:
+        try:
+            text = CSVManager._read_text_with_fallback(filepath)
+            import io
+            f = io.StringIO(text)
             reader = csv.DictReader(f)
+            # Поврежденный/пустой заголовок: считаем файл пустым
+            if reader.fieldnames is None:
+                return []
             for row in reader:
-                rows.append(row)
+                if row is None:
+                    continue
+                # Приводим None к пустым строкам
+                clean = {k: ('' if v is None else v) for k, v in row.items() if k is not None}
+                rows.append(clean)
+        except (csv.Error, TypeError, UnicodeDecodeError):
+            # Некорректный CSV — не падаем в рантайме
+            return []
         return rows
     
     @staticmethod
     def write_csv(filepath: str, rows: List[Dict], headers: List[str]) -> None:
         """Пишет данные в CSV файл"""
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
+            writer = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
             writer.writeheader()
-            writer.writerows(rows)
+            normalized_rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                normalized_rows.append({h: row.get(h, '') for h in headers})
+            writer.writerows(normalized_rows)
     
     @staticmethod
     def add_row(filepath: str, row: Dict, headers: List[str]) -> None:
@@ -132,6 +163,10 @@ class CompetitionCSVManager:
     PAIRS_HEADERS = ['номер пары', 'Тори_ФИО', 'Тори_год рождения', 'Тори_разряд', 'Тори_кю', 'Тори_СШ', 'Тори_тренер', 'Уке_ФИО', 'Уке_год рождения', 'Уке_разряд', 'Уке_кю', 'Уке_СШ', 'Уке_тренер']
     JUDGES_LIST_HEADERS = ['место', 'ФИО']
     FINAL_PROTOCOL_HEADERS = ['номер пары', 'Тори', 'Уке', 'Судья 1', 'Судья 2', 'Судья 3', 'Судья 4', 'Судья 5', 'Сумма', 'Место']
+
+    @staticmethod
+    def normalize_stage(stage: str) -> str:
+        return 'final' if str(stage).strip().lower() == 'final' else 'prelim'
     
     @staticmethod
     def get_discipline_path(comp_base_path: str, discipline_key: str) -> str:
@@ -155,12 +190,49 @@ class CompetitionCSVManager:
         CSVManager.ensure_csv_exists(participants_file, CompetitionCSVManager.PAIRS_HEADERS)
         CSVManager.ensure_csv_exists(judges_file, CompetitionCSVManager.JUDGES_LIST_HEADERS)
         CSVManager.ensure_csv_exists(final_protocol_file, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+        for stage in ('prelim', 'final'):
+            stage_path = os.path.join(disc_path, stage)
+            os.makedirs(stage_path, exist_ok=True)
+            os.makedirs(os.path.join(stage_path, 'protocols'), exist_ok=True)
+            CSVManager.ensure_csv_exists(
+                os.path.join(stage_path, 'participants_list.csv'),
+                CompetitionCSVManager.PAIRS_HEADERS
+            )
+            CSVManager.ensure_csv_exists(
+                os.path.join(stage_path, 'final_protocol.csv'),
+                CompetitionCSVManager.FINAL_PROTOCOL_HEADERS
+            )
+
+    @staticmethod
+    def get_stage_path(comp_base_path: str, discipline_key: str, stage: str) -> str:
+        disc_path = CompetitionCSVManager.get_discipline_path(comp_base_path, discipline_key)
+        return os.path.join(disc_path, CompetitionCSVManager.normalize_stage(stage))
+
+    @staticmethod
+    def get_stage_participants_path(comp_base_path: str, discipline_key: str, stage: str) -> str:
+        return os.path.join(
+            CompetitionCSVManager.get_stage_path(comp_base_path, discipline_key, stage),
+            'participants_list.csv'
+        )
+
+    @staticmethod
+    def get_stage_final_protocol_path(comp_base_path: str, discipline_key: str, stage: str) -> str:
+        return os.path.join(
+            CompetitionCSVManager.get_stage_path(comp_base_path, discipline_key, stage),
+            'final_protocol.csv'
+        )
     
     @staticmethod
     def get_protocol_path(comp_base_path: str, discipline_key: str, judge_name: str, judge_position: int, tori: str, uke: str) -> str:
         """Возвращает путь до файла протокола судьи"""
         disc_path = CompetitionCSVManager.get_discipline_path(comp_base_path, discipline_key)
         protocols_path = os.path.join(disc_path, 'protocols')
+        return os.path.join(protocols_path, f'{judge_name}_{judge_position}_{tori}-{uke}.csv')
+
+    @staticmethod
+    def get_stage_protocol_path(comp_base_path: str, discipline_key: str, stage: str, judge_name: str, judge_position: int, tori: str, uke: str) -> str:
+        stage_path = CompetitionCSVManager.get_stage_path(comp_base_path, discipline_key, stage)
+        protocols_path = os.path.join(stage_path, 'protocols')
         return os.path.join(protocols_path, f'{judge_name}_{judge_position}_{tori}-{uke}.csv')
 
     @staticmethod

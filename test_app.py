@@ -61,6 +61,8 @@ class TestCompetitionCSVManager(unittest.TestCase):
         self.assertTrue(os.path.exists(disc_path))
         self.assertTrue(os.path.exists(os.path.join(disc_path, 'protocols')))
         self.assertTrue(os.path.exists(os.path.join(disc_path, 'final_protocol.csv')))
+        self.assertTrue(os.path.exists(os.path.join(disc_path, 'prelim', 'participants_list.csv')))
+        self.assertTrue(os.path.exists(os.path.join(disc_path, 'final', 'participants_list.csv')))
 
     def test_read_judge_scores(self):
         disc_path = os.path.join(self.comp_path, self.kata_key)
@@ -84,6 +86,18 @@ class TestScoring(unittest.TestCase):
         judge_scores = [85.0, 88.0]  # only 2 judges
         final = calculate_pair_final_score(judge_scores)
         self.assertIsNone(final)
+
+    def test_calculate_pair_final_score_three_judges(self):
+        final = calculate_pair_final_score([80.0, 82.5, 84.0], judge_count=3)
+        self.assertEqual(final, 246.5)
+
+    def test_calculate_pair_final_score_four_judges(self):
+        final = calculate_pair_final_score([80.0, 81.0, 82.0, 83.0], judge_count=4)
+        self.assertEqual(final, 326.0)
+
+    def test_calculate_pair_final_score_more_than_five(self):
+        final = calculate_pair_final_score([85.0, 88.0, 90.0, 87.0, 89.0, 100.0], judge_count=6)
+        self.assertEqual(final, 264.0)
 
 if __name__ == '__main__':
     unittest.main()

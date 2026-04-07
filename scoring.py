@@ -34,15 +34,29 @@ def calculate_judge_total_score(technique_scores: list, forgotten_flags: list) -
     return total
 
 
-def calculate_pair_final_score(judge_totals: list) -> float:
+def calculate_pair_final_score(judge_totals: list, judge_count: int = 5) -> float:
     """
     Рассчитывает итоговый балл пары.
-    judge_totals: список баллов от 5 судей
-    Возвращает: сумма после отбрасывания max и min
+    judge_totals: список баллов от судей
+    judge_count:
+      - 3 -> сумма трех
+      - 4 -> сумма четырех
+      - >=5 -> по первым 5: отбрасывание max/min и сумма 3 средних
     """
-    if len(judge_totals) < 5:
-        return None  # Недостаточно оценок
-    
-    sorted_scores = sorted(judge_totals)
-    trimmed = sorted_scores[1:-1]  # убираем min и max (3 средних)
+    if judge_count < 3:
+        return None
+    if judge_count > 5:
+        judge_count = 5
+
+    vals = [float(x) for x in judge_totals[:judge_count] if x is not None]
+    if len(vals) < judge_count:
+        return None
+
+    if judge_count == 3:
+        return sum(vals)
+    if judge_count == 4:
+        return sum(vals)
+
+    sorted_scores = sorted(vals[:5])
+    trimmed = sorted_scores[1:-1]
     return sum(trimmed)

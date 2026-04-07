@@ -8,6 +8,7 @@ import json
 
 # Импортируем DISCIPLINE_ROWS_BY_KEY из technics.py
 from technics import DISCIPLINE_ROWS_BY_KEY
+from generate_protocols import generate_competition_protocols, protocol_readiness
 
 # Функция для получения красивого названия дисциплины
 def get_discipline_display_name(key):
@@ -22,6 +23,94 @@ def get_discipline_display_name(key):
         'itsutsunokata': 'Itsutsu-no-kata',
     }
     return display_names.get(key.lower(), key)
+
+
+MONTHS_RU = {
+    1: 'января', 2: 'февраля', 3: 'марта', 4: 'апреля',
+    5: 'мая', 6: 'июня', 7: 'июля', 8: 'августа',
+    9: 'сентября', 10: 'октября', 11: 'ноября', 12: 'декабря',
+}
+
+
+def format_date_ru(dt: datetime) -> str:
+    return f"{dt.day} {MONTHS_RU.get(dt.month, '')} {dt.year} г."
+
+
+def _stage_config_path(comp_path: str, kata_key: str) -> str:
+    return os.path.join(comp_path, kata_key, 'stage.json')
+
+
+def ensure_stage_config(comp_path: str, kata_key: str) -> dict:
+    disc_path = os.path.join(comp_path, kata_key)
+    os.makedirs(disc_path, exist_ok=True)
+    cfg_path = _stage_config_path(comp_path, kata_key)
+    cfg = {
+        'mode': 'final_only',
+        'current_stage': 'final',
+        'status': 'open',
+        'final_top_n': 3,
+    }
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            cfg.update(loaded or {})
+        except Exception:
+            pass
+    # Ensure stage folders and files exist
+    CompetitionCSVManager.create_discipline_structure(comp_path, kata_key)
+    for stage in ('prelim', 'final'):
+        stage_pairs = CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, stage)
+        stage_final = CompetitionCSVManager.get_stage_final_protocol_path(comp_path, kata_key, stage)
+        CSVManager.ensure_csv_exists(stage_pairs, CompetitionCSVManager.PAIRS_HEADERS)
+        CSVManager.ensure_csv_exists(stage_final, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+    with open(cfg_path, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    return cfg
+
+
+def stage_for_ops(comp_path: str, kata_key: str) -> str:
+    cfg = ensure_stage_config(comp_path, kata_key)
+    return 'final' if cfg.get('current_stage') == 'final' else 'prelim'
+
+
+def get_stage_files(comp_path: str, kata_key: str, stage: str) -> dict:
+    return {
+        'participants': CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, stage),
+        'final_protocol': CompetitionCSVManager.get_stage_final_protocol_path(comp_path, kata_key, stage),
+    }
+
+
+def judge_positions_meta(judges: list) -> dict:
+    positions = []
+    for j in judges:
+        try:
+            p = int(str(j.get('место', '')).strip())
+            if p > 0:
+                positions.append(p)
+        except Exception:
+            continue
+    unique_positions = sorted(set(positions))
+    n = len(unique_positions)
+    if n < 3:
+        return {'valid': False, 'error': 'Минимум 3 судьи', 'positions': [], 'effective_positions': [], 'effective_count': 0}
+    eff = unique_positions[:5]
+    return {'valid': True, 'error': '', 'positions': unique_positions, 'effective_positions': eff, 'effective_count': len(eff)}
+
+
+def _compute_final_from_entry(pair_entry: dict, effective_positions: list) -> float:
+    scores = []
+    for p in effective_positions:
+        if p < 1 or p > 5:
+            continue
+        s = pair_entry.get(f'Судья {p}', '')
+        if s in (None, ''):
+            return None
+        try:
+            scores.append(float(s))
+        except ValueError:
+            return None
+    return calculate_pair_final_score(scores, judge_count=len(effective_positions))
 
 
 def _participant_detail_line(pair_row: dict, prefix: str) -> str:
@@ -276,7 +365,7 @@ def edit_competition(comp_name):
     disciplines = []
     for folder in os.listdir(comp_path):
         folder_path = os.path.join(comp_path, folder)
-        if os.path.isdir(folder_path) and folder not in ['__pycache__']:
+        if os.path.isdir(folder_path) and folder not in ('__pycache__', 'results'):
             # Получаем количество пар
             pairs_file = os.path.join(folder_path, 'participants_list.csv')
             pair_count = 0
@@ -287,19 +376,54 @@ def edit_competition(comp_name):
             disciplines.append({
                 'key': folder,
                 'name': get_discipline_display_name(folder),
-                'pair_count': pair_count
+                'pair_count': pair_count,
+                'stage': ensure_stage_config(comp_path, folder),
             })
     
     # Получаем все доступные дисциплины
     all_disciplines = list(DISCIPLINE_ROWS_BY_KEY.keys())
     existing_disciplines = [d['key'] for d in disciplines]
     available_disciplines = [{'key': d, 'name': get_discipline_display_name(d)} for d in all_disciplines if d not in existing_disciplines]
-    
-    return render_template('edit_competition.html', 
-                         comp_name=comp_name, 
-                         config=config, 
+
+    proto_status = protocol_readiness(comp_path)
+
+    return render_template('edit_competition.html',
+                         comp_name=comp_name,
+                         config=config,
                          disciplines=disciplines,
-                         available_disciplines=available_disciplines)
+                         available_disciplines=available_disciplines,
+                         protocol_status=proto_status)
+
+
+@app.route('/admin/<comp_name>/protocol-status')
+def competition_protocol_status(comp_name):
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    return jsonify(protocol_readiness(comp_path))
+
+
+@app.route('/admin/<comp_name>/generate-protocols', methods=['POST'])
+def competition_generate_protocols(comp_name):
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    data = request.get_json(silent=True) or {}
+    dk = (data.get('discipline_key') or '').strip() or None
+    if dk:
+        disc_path = os.path.join(comp_path, dk)
+        if not os.path.isdir(disc_path):
+            return jsonify({'error': 'Discipline not found'}), 404
+    result = generate_competition_protocols(
+        comp_path, comp_name, discipline_key=dk, technique_map=DISCIPLINE_ROWS_BY_KEY
+    )
+    if result.get('success'):
+        result['readiness'] = protocol_readiness(comp_path)
+    return jsonify(result)
 
 
 @app.route('/admin/<comp_name>/add-discipline', methods=['POST'])
@@ -318,8 +442,85 @@ def add_discipline(comp_name):
     
     # Создаем структуру для дисциплины
     CompetitionCSVManager.create_discipline_structure(comp_path, discipline_key)
+    ensure_stage_config(comp_path, discipline_key)
     
     return jsonify({'success': True, 'message': 'Дисциплина добавлена'})
+
+
+@app.route('/admin/<comp_name>/<kata_key>/stage', methods=['POST'])
+def discipline_stage_action(comp_name, kata_key):
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    disc_path = os.path.join(comp_path, kata_key)
+    if not os.path.isdir(disc_path):
+        return jsonify({'error': 'Discipline not found'}), 404
+    cfg = ensure_stage_config(comp_path, kata_key)
+    data = request.get_json(silent=True) or {}
+    action = str(data.get('action', '')).strip()
+    top_n = int(data.get('top_n', cfg.get('final_top_n', 3) or 3))
+    top_n = max(1, min(16, top_n))
+    cfg['final_top_n'] = top_n
+
+    if action == 'set_prelim':
+        cfg['mode'] = 'prelim_final'
+        cfg['current_stage'] = 'prelim'
+        cfg['status'] = 'open'
+        # sync prelim participants from master list
+        master_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
+        CSVManager.write_csv(
+            CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'prelim'),
+            master_pairs,
+            CompetitionCSVManager.PAIRS_HEADERS,
+        )
+    elif action == 'set_final_only':
+        cfg['mode'] = 'final_only'
+        cfg['current_stage'] = 'final'
+        cfg['status'] = 'open'
+        master_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
+        CSVManager.write_csv(
+            CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'final'),
+            master_pairs,
+            CompetitionCSVManager.PAIRS_HEADERS,
+        )
+    elif action == 'open_final':
+        prelim_final_path = CompetitionCSVManager.get_stage_final_protocol_path(comp_path, kata_key, 'prelim')
+        prelim_results = CSVManager.read_csv(prelim_final_path)
+        prelim_results = [r for r in prelim_results if str(r.get('Сумма', '')).strip()]
+        prelim_results.sort(
+            key=lambda r: (-float(str(r.get('Сумма', '0')).replace(',', '.')), int(r.get('номер пары', 0)))
+        )
+        winners = prelim_results[:top_n]
+        prelim_pairs = CSVManager.read_csv(CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'prelim'))
+        by_num = {str(p.get('номер пары', '')).strip(): p for p in prelim_pairs}
+        final_pairs = []
+        for w in winners:
+            p = by_num.get(str(w.get('номер пары', '')).strip())
+            if p:
+                final_pairs.append(p)
+        CSVManager.write_csv(
+            CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'final'),
+            final_pairs,
+            CompetitionCSVManager.PAIRS_HEADERS,
+        )
+        CSVManager.write_csv(
+            CompetitionCSVManager.get_stage_final_protocol_path(comp_path, kata_key, 'final'),
+            [],
+            CompetitionCSVManager.FINAL_PROTOCOL_HEADERS,
+        )
+        cfg['mode'] = 'prelim_final'
+        cfg['current_stage'] = 'final'
+        cfg['status'] = 'open'
+    elif action == 'close_stage':
+        cfg['status'] = 'closed'
+    elif action == 'open_stage':
+        cfg['status'] = 'open'
+    else:
+        return jsonify({'error': 'Unknown action'}), 400
+
+    with open(_stage_config_path(comp_path, kata_key), 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    return jsonify({'success': True, 'stage': cfg})
 
 
 @app.route('/admin/<comp_name>/remove-discipline', methods=['POST'])
@@ -510,26 +711,49 @@ def register_participants(comp_name, kata_key):
             
             pair_index += 1
         
-        # Парсим судей
-        for judge_pos in range(1, 6):
-            judge_name = request.form.get(f'judge_{judge_pos}_name', '').strip()
-            if judge_name:
-                judge_info = {
-                    'место': judge_pos,
-                    'ФИО': judge_name
-                }
-                
-                judges_data.append(judge_info)
-                
-                # Добавляем в глобальный CSV судей
-                temp_info = judge_info.copy()
-                temp_info.pop('место')
-                CSVManager.add_row(JUDGES_CSV, temp_info, CompetitionCSVManager.JUDGES_HEADERS)
+        # Парсим судей (поддержка произвольного количества)
+        judge_items = []
+        for k, v in request.form.items():
+            if not k.startswith('judge_') or not k.endswith('_name'):
+                continue
+            name = str(v or '').strip()
+            if not name:
+                continue
+            mid = k[len('judge_'):-len('_name')]
+            try:
+                pos = int(mid)
+            except ValueError:
+                continue
+            if pos <= 0:
+                continue
+            judge_items.append((pos, name))
+        judge_items.sort(key=lambda x: x[0])
+
+        for judge_pos, judge_name in judge_items:
+            judge_info = {
+                'место': judge_pos,
+                'ФИО': judge_name
+            }
+            judges_data.append(judge_info)
+            # Добавляем в глобальный CSV судей
+            CSVManager.add_row(JUDGES_CSV, {'ФИО': judge_name}, CompetitionCSVManager.JUDGES_HEADERS)
         
         # Сохраняем в локальные CSV
         if pairs_data:
             pairs_file = os.path.join(disc_path, 'participants_list.csv')
             CSVManager.write_csv(pairs_file, pairs_data, CompetitionCSVManager.PAIRS_HEADERS)
+            cfg = ensure_stage_config(comp_path, kata_key)
+            CSVManager.write_csv(
+                CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'prelim'),
+                pairs_data,
+                CompetitionCSVManager.PAIRS_HEADERS,
+            )
+            if cfg.get('mode') == 'final_only':
+                CSVManager.write_csv(
+                    CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'final'),
+                    pairs_data,
+                    CompetitionCSVManager.PAIRS_HEADERS,
+                )
         
         if judges_data:
             judges_file = os.path.join(disc_path, 'judges_list.csv')
@@ -692,18 +916,19 @@ def save_judge_scores(comp_name, kata_key):
         return jsonify({'error': 'Invalid scores length'}), 400
 
     comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
-    disc_path = os.path.join(comp_path, kata_key)
+    stage = stage_for_ops(comp_path, kata_key)
+    files = get_stage_files(comp_path, kata_key, stage)
 
     # Получаем ФИО пары
-    pairs_file = os.path.join(disc_path, 'participants_list.csv')
-    pairs = CSVManager.read_csv(pairs_file) if os.path.exists(pairs_file) else []
+    pairs_file = files['participants']
+    pairs = CSVManager.read_csv(pairs_file)
     pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == int(pair_number)), None)
     if pair_obj:
         tori_fio = pair_obj.get('Тори_ФИО', '')
         uke_fio = pair_obj.get('Уке_ФИО', '')
-        protocol_path = CompetitionCSVManager.get_protocol_path(comp_path, kata_key, judge_name, int(judge_position), tori_fio, uke_fio)
+        protocol_path = CompetitionCSVManager.get_stage_protocol_path(comp_path, kata_key, stage, judge_name, int(judge_position), tori_fio, uke_fio)
     else:
-        protocol_path = os.path.join(disc_path, 'protocols', f'{judge_name}_{judge_position}_{pair_number}.csv')
+        protocol_path = os.path.join(CompetitionCSVManager.get_stage_path(comp_path, kata_key, stage), 'protocols', f'{judge_name}_{judge_position}_{pair_number}.csv')
 
     os.makedirs(os.path.dirname(protocol_path), exist_ok=True)
 
@@ -729,11 +954,13 @@ def save_judge_action(comp_name, kata_key):
     if not judge or not pos or not pair:
         return jsonify({'error': 'Missing data'}), 400
 
-    # Получаем ФИО пары
     comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
-    disc_path = os.path.join(comp_path, kata_key)
-    pairs_file = os.path.join(disc_path, 'participants_list.csv')
-    pairs = CSVManager.read_csv(pairs_file) if os.path.exists(pairs_file) else []
+    stage = stage_for_ops(comp_path, kata_key)
+    stage_cfg = ensure_stage_config(comp_path, kata_key)
+    if stage_cfg.get('status') == 'closed':
+        return jsonify({'error': 'Stage is closed'}), 400
+    files = get_stage_files(comp_path, kata_key, stage)
+    pairs = CSVManager.read_csv(files['participants'])
     pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == int(pair)), None)
     if not pair_obj:
         return jsonify({'error': 'Pair not found'}), 400
@@ -756,7 +983,7 @@ def save_judge_action(comp_name, kata_key):
             scores.append(max(0, min(10, score)))
 
     # Сохраняем файл
-    protocol_path = CompetitionCSVManager.get_protocol_path(comp_path, kata_key, judge, int(pos), tori_fio, uke_fio)
+    protocol_path = CompetitionCSVManager.get_stage_protocol_path(comp_path, kata_key, stage, judge, int(pos), tori_fio, uke_fio)
 
     os.makedirs(os.path.dirname(protocol_path), exist_ok=True)
 
@@ -767,8 +994,12 @@ def save_judge_action(comp_name, kata_key):
     CSVManager.write_csv(protocol_path, technique_data, headers)
 
     if isFinal:
-        # Обновляем final_protocol.csv
-        final_protocol_path = os.path.join(disc_path, 'final_protocol.csv')
+        judges_file = os.path.join(comp_path, kata_key, 'judges_list.csv')
+        judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
+        meta = judge_positions_meta(judges)
+        if not meta['valid']:
+            return jsonify({'error': meta['error']}), 400
+        final_protocol_path = files['final_protocol']
         all_results = CSVManager.read_csv(final_protocol_path) if os.path.exists(final_protocol_path) else []
         
         # Ищем или создаем запись для этой пары
@@ -797,23 +1028,12 @@ def save_judge_action(comp_name, kata_key):
             pair_entry['Уке'] = encode_participant_for_protocol(pair_obj, 'Уке')
         
         # Обновляем оценку судьи
-        judge_col = f'Судья {pos}'
-        pair_entry[judge_col] = total
-        
-        # Пересчитываем сумму если все судьи заполнили
-        scores = []
-        for j in range(1, 6):
-            s = pair_entry.get(f'Судья {j}', '')
-            if s:
-                try:
-                    scores.append(float(s))
-                except ValueError:
-                    pass
-        
-        if len(scores) == 5:
-            sorted_scores = sorted(scores)
-            final = sum(sorted_scores[1:4])  # Убираем макс и мин
-            pair_entry['Сумма'] = f'{final:.1f}'
+        p_int = int(pos)
+        if 1 <= p_int <= 5:
+            judge_col = f'Судья {p_int}'
+            pair_entry[judge_col] = total
+        final = _compute_final_from_entry(pair_entry, meta['effective_positions'])
+        pair_entry['Сумма'] = f'{final:.1f}' if final is not None else ''
         
         # Записываем обновленный финальный протокол
         CSVManager.write_csv(final_protocol_path, all_results, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
@@ -825,7 +1045,19 @@ def save_judge_action(comp_name, kata_key):
 def get_judge_scores(comp_name, kata_key, judge, pos, tori, uke):
     """Получить существующие оценки судьи"""
     comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
-    scores = CompetitionCSVManager.read_judge_scores(comp_path, kata_key, judge, pos, tori, uke)
+    stage = stage_for_ops(comp_path, kata_key)
+    protocol_path = CompetitionCSVManager.get_stage_protocol_path(comp_path, kata_key, stage, judge, pos, tori, uke)
+    details = {}
+    rows = CSVManager.read_csv(protocol_path)
+    for row in rows:
+        tech_name = row.get('техника', '')
+        details_json = row.get('details_json', '{}')
+        try:
+            detail = json.loads(details_json)
+        except json.JSONDecodeError:
+            detail = {}
+        details[tech_name] = detail
+    scores = details
     return jsonify(scores)
 
 
@@ -851,7 +1083,7 @@ def public_dashboard():
                     disciplines = []
                     for folder in os.listdir(comp_path):
                         folder_path = os.path.join(comp_path, folder)
-                        if os.path.isdir(folder_path) and folder not in ['__pycache__']:
+                        if os.path.isdir(folder_path) and folder not in ('__pycache__', 'results'):
                             disciplines.append({
                                 'key': folder,
                                 'name': get_discipline_display_name(folder)
@@ -881,118 +1113,30 @@ def judge_page(comp_name, kata_key):
         flash('Дисциплина не найдена', 'danger')
         return redirect(url_for('public_dashboard'))
     
-    # Получаем список техник
+    stage_cfg = ensure_stage_config(comp_path, kata_key)
+    stage = stage_for_ops(comp_path, kata_key)
+    if stage_cfg.get('status') == 'closed':
+        flash('Этап дисциплины закрыт', 'warning')
     techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
-    
-    # Получаем список пар
-    pairs_file = os.path.join(disc_path, 'participants_list.csv')
-    pairs = CSVManager.read_csv(pairs_file) if os.path.exists(pairs_file) else []
-    
-    # Получаем список судей
+
+    stage_files = get_stage_files(comp_path, kata_key, stage)
+    pairs = CSVManager.read_csv(stage_files['participants'])
+
     judges_file = os.path.join(disc_path, 'judges_list.csv')
     judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
-    
-    if request.method == 'POST':
-        judge_name = request.form.get('judge_name', '').strip()
-        judge_position = int(request.form.get('judge_position', 1))
-        pair_number = int(request.form.get('pair_number', 1))
-        
-        # Собираем оценки
-        technique_scores = []
-        technique_data = []
-        
-        for i, tech in enumerate(techniques):
-            score_key = f'technique_{i}_score'
-            score = float(request.form.get(score_key, 10.0))
-            technique_scores.append(score)
-            technique_data.append({
-                'техника': tech,
-                'оценка': score
-            })
-        
-        # Сохраняем протокол судьи
-        tori_fio = ''
-        uke_fio = ''
-        pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == pair_number), None)
-        if pair_obj:
-            tori_fio = pair_obj.get('Тори_ФИО', '')
-            uke_fio = pair_obj.get('Уке_ФИО', '')
-            protocol_path = CompetitionCSVManager.get_protocol_path(comp_path, kata_key, judge_name, judge_position, tori_fio, uke_fio)
-        else:
-            protocol_path = os.path.join(disc_path, 'protocols', f'{judge_name}_{judge_position}_{tori_fio}-{uke_fio}.csv')
-        os.makedirs(os.path.dirname(protocol_path), exist_ok=True)
-        
-        # Записываем протокол
-        headers = ['техника', 'оценка']
-        CSVManager.write_csv(protocol_path, technique_data, headers)
-        
-        # Также сохраняем финальный протокол
-        final_protocol_path = os.path.join(disc_path, 'final_protocol.csv')
-        all_results = CSVManager.read_csv(final_protocol_path) if os.path.exists(final_protocol_path) else []
-        
-        # Ищем или создаем запись для этой пары
-        pair_entry = None
-        for entry in all_results:
-            if int(entry.get('номер пары', 0)) == pair_number:
-                pair_entry = entry
-                break
-        
-        if not pair_entry:
-            pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == pair_number), None)
-            if pair_obj:
-                pair_entry = {
-                    'номер пары': pair_number,
-                    'Тори': encode_participant_for_protocol(pair_obj, 'Тори'),
-                    'Уке': encode_participant_for_protocol(pair_obj, 'Уке'),
-                    'Судья 1': '',
-                    'Судья 2': '',
-                    'Судья 3': '',
-                    'Судья 4': '',
-                    'Судья 5': '',
-                    'Сумма': '',
-                    'Место': ''
-                }
-                all_results.append(pair_entry)
-        else:
-            pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == pair_number), None)
-            if pair_obj:
-                pair_entry['Тори'] = encode_participant_for_protocol(pair_obj, 'Тори')
-                pair_entry['Уке'] = encode_participant_for_protocol(pair_obj, 'Уке')
-        
-        # Обновляем оценку судьи в финальном протоколе
-        if pair_entry:
-            total = sum(technique_scores)
-            pair_entry[f'Судья {judge_position}'] = f'{total:.1f}'
-            
-            # Пересчитываем сумму если все судьи оценили
-            scores = []
-            for j in range(1, 6):
-                s = pair_entry.get(f'Судья {j}', '')
-                if s:
-                    try:
-                        scores.append(float(s))
-                    except:
-                        pass
-            
-            if len(scores) == 5:
-                sorted_scores = sorted(scores)
-                final = sum(sorted_scores[1:4])  # Убираем макс и мин
-                pair_entry['Сумма'] = f'{final:.1f}'
-            
-            # Записываем обновленный финальный протокол
-            final_headers = ['номер пары', 'Тори', 'Уке', 'Судья 1', 'Судья 2', 'Судья 3', 'Судья 4', 'Судья 5', 'Сумма', 'Место']
-            CSVManager.write_csv(final_protocol_path, all_results, final_headers)
-        
-        flash('Оценки сохранены', 'success')
-        return redirect(url_for('judge_page', comp_name=comp_name, kata_key=kata_key))
-    
+    meta = judge_positions_meta(judges)
+    judge_positions = meta['positions']
+
     return render_template('judge_form.html',
                          comp_name=comp_name,
                          kata_key=kata_key,
                          kata_name=get_discipline_display_name(kata_key),
                          techniques=techniques,
                          pairs=pairs,
-                         judges=judges)
+                         judges=judges,
+                         judge_positions=judge_positions,
+                         stage=stage,
+                         stage_error='' if meta['valid'] else meta['error'])
 
 
 # ==================== ТАБЛО ====================
@@ -1017,27 +1161,36 @@ def tablo(comp_name, kata_key):
             config = json.load(f)
     comp_display_name = config.get('name', comp_name)
     
+    stage_cfg = ensure_stage_config(comp_path, kata_key)
+    stage = stage_for_ops(comp_path, kata_key)
     techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
-    
-    pairs_file = os.path.join(disc_path, 'participants_list.csv')
-    pairs = CSVManager.read_csv(pairs_file) if os.path.exists(pairs_file) else []
-    
+    stage_files = get_stage_files(comp_path, kata_key, stage)
+    pairs = CSVManager.read_csv(stage_files['participants'])
+
     judges_file = os.path.join(disc_path, 'judges_list.csv')
     judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
-    
-    final_protocol_path = os.path.join(comp_path, kata_key, 'final_protocol.csv')
+    meta = judge_positions_meta(judges)
+    effective_positions = meta['effective_positions']
+    final_protocol_path = stage_files['final_protocol']
     
     def build_results_from_pairs():
         results = []
         for pair in pairs:
             pair_number = int(pair.get('номер пары', 0))
             judge_scores = []
-            for judge in judges:
-                judge_pos = int(judge.get('место', 0))
-                judge_name = judge.get('ФИО', '')
-                scores = CompetitionCSVManager.read_judge_scores(
-                    comp_path, kata_key, judge_name, judge_pos, pair.get('Тори_ФИО', ''), pair.get('Уке_ФИО', '')
+            for judge_pos in effective_positions:
+                judge_obj = next((j for j in judges if str(j.get('место', '')).strip() == str(judge_pos)), {})
+                judge_name = judge_obj.get('ФИО', '')
+                protocol_path = CompetitionCSVManager.get_stage_protocol_path(
+                    comp_path, kata_key, stage, judge_name, judge_pos, pair.get('Тори_ФИО', ''), pair.get('Уке_ФИО', '')
                 )
+                scores = {}
+                for row in CSVManager.read_csv(protocol_path):
+                    tech_name = row.get('техника', '')
+                    try:
+                        scores[tech_name] = json.loads(row.get('details_json', '{}'))
+                    except json.JSONDecodeError:
+                        scores[tech_name] = {}
                 if scores:
                     technique_scores = []
                     forgotten_flags = []
@@ -1062,8 +1215,8 @@ def tablo(comp_name, kata_key):
                     judge_scores.append(judge_total)
                 else:
                     judge_scores.append(None)
-            if len(judge_scores) == 5 and all(s is not None for s in judge_scores):
-                final_score = calculate_pair_final_score(judge_scores)
+            if judge_scores and all(s is not None for s in judge_scores):
+                final_score = calculate_pair_final_score(judge_scores, judge_count=max(3, len(effective_positions)))
             else:
                 final_score = None
             results.append({
@@ -1076,7 +1229,29 @@ def tablo(comp_name, kata_key):
         return results
     
     if os.path.exists(final_protocol_path):
-        existing_results = CompetitionCSVManager.read_final_protocol(comp_path, kata_key)
+        existing_results = []
+        rows_existing = CSVManager.read_csv(final_protocol_path)
+        for row in rows_existing:
+            judge_scores = []
+            for p in effective_positions:
+                if 1 <= p <= 5:
+                    try:
+                        v = float(row.get(f'Судья {p}', '')) if row.get(f'Судья {p}', '') != '' else None
+                    except ValueError:
+                        v = None
+                    judge_scores.append(v)
+            try:
+                final_score = float(row.get('Сумма', '')) if row.get('Сумма') else None
+            except ValueError:
+                final_score = None
+            existing_results.append({
+                'pair_number': int(row.get('номер пары', 0)),
+                'tori': row.get('Тори', ''),
+                'uke': row.get('Уке', ''),
+                'judge_scores': judge_scores,
+                'final_score': final_score,
+                'place': int(row.get('Место', 0)) if str(row.get('Место', '')).strip().isdigit() else None,
+            })
         if existing_results:
             base_results = existing_results
         else:
@@ -1092,14 +1267,17 @@ def tablo(comp_name, kata_key):
             'номер пары': result['pair_number'],
             'Тори': result['tori'],
             'Уке': result['uke'],
-            'Судья 1': result['judge_scores'][0] if len(result['judge_scores']) > 0 and result['judge_scores'][0] is not None else '',
-            'Судья 2': result['judge_scores'][1] if len(result['judge_scores']) > 1 and result['judge_scores'][1] is not None else '',
-            'Судья 3': result['judge_scores'][2] if len(result['judge_scores']) > 2 and result['judge_scores'][2] is not None else '',
-            'Судья 4': result['judge_scores'][3] if len(result['judge_scores']) > 3 and result['judge_scores'][3] is not None else '',
-            'Судья 5': result['judge_scores'][4] if len(result['judge_scores']) > 4 and result['judge_scores'][4] is not None else '',
+            'Судья 1': '',
+            'Судья 2': '',
+            'Судья 3': '',
+            'Судья 4': '',
+            'Судья 5': '',
             'Сумма': result['final_score'] if result['final_score'] is not None else '',
             'Место': result['place'] if result.get('place') is not None else '',
         }
+        for idx, p in enumerate(effective_positions):
+            if 1 <= p <= 5 and idx < len(result['judge_scores']) and result['judge_scores'][idx] is not None:
+                row[f'Судья {p}'] = result['judge_scores'][idx]
         rows.append(row)
     CSVManager.write_csv(final_protocol_path, rows, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
     
@@ -1109,9 +1287,12 @@ def tablo(comp_name, kata_key):
         comp_display_name=comp_display_name,
         kata_key=kata_key,
         kata_name=get_discipline_display_name(kata_key),
-        judges=judges,
+        judges=[j for j in judges if str(j.get('место', '')).strip().isdigit() and int(j.get('место', 0)) in effective_positions],
         results=final_results,
         config=config,
+        stage=stage,
+        stage_label='Финал' if stage == 'final' else 'Предварительные встречи',
+        display_date=format_date_ru(datetime.now()),
     )
 
 
