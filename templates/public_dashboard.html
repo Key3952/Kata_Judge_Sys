@@ -62,8 +62,14 @@
     {% for comp in competitions %}
     <div class="col-lg-10 offset-lg-1">
         <div class="card competition-card">
-            <div class="card-header">
+            <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">🏆 {{ comp.display_name }}</h5>
+                <a href="{{ url_for('main_tablo', comp_name=comp.name) }}"
+                   class="btn btn-sm btn-primary"
+                   target="_blank"
+                   title="Открыть главное табло">
+                    📺 Главное Табло
+                </a>
             </div>
             <div class="card-body">
                 <h6 class="mb-3">Дисциплины:</h6>

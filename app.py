@@ -1,5 +1,6 @@
 # app.py
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
 from datetime import datetime
 from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer
@@ -221,6 +222,16 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['SECRET_KEY'] = 'your_secret_key_here_change_in_production'
 app.config['SESSION_COOKIE_SECURE'] = False
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+
+# Инициализация SocketIO
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    manage_session=False,
+    async_mode='threading',
+    logger=True,
+    engineio_logger=True
+)
 
 # Глобальные пути
 GLOBAL_DATA_DIR = os.path.dirname(__file__)
@@ -528,6 +539,40 @@ def discipline_stage_action(comp_name, kata_key):
     with open(_stage_config_path(comp_path, kata_key), 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     return jsonify({'success': True, 'stage': cfg})
+
+
+@app.route('/admin/<comp_name>/set-main-tablo', methods=['POST'])
+def set_main_tablo_discipline(comp_name):
+    """Установить дисциплину для главного табло и уведомить всех зрителей через WebSocket"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+
+    discipline_key = request.json.get('discipline_key', '').strip()
+
+    # Читаем конфиг
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+    # Устанавливаем выбранную дисциплину
+    config['main_tablo_discipline'] = discipline_key
+
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+    # Отправляем WebSocket событие всем подключенным клиентам
+    socketio.emit('tablo_update', {
+        'comp_name': comp_name,
+        'discipline_key': discipline_key
+    }, room=f'tablo_{comp_name}')
+
+    return jsonify({'success': True, 'message': 'Дисциплина для главного табло установлена'})
 
 
 @app.route('/admin/<comp_name>/remove-discipline', methods=['POST'])
@@ -1151,6 +1196,30 @@ def judge_page(comp_name, kata_key):
 
 # ==================== ТАБЛО ====================
 
+@app.route('/tablo/<comp_name>')
+def main_tablo(comp_name):
+    """Динамическое главное табло с автоматическим обновлением через WebSocket"""
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        flash('Соревнование не найдено', 'danger')
+        return redirect(url_for('public_dashboard'))
+
+    # Читаем конфигурацию соревнования
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+    comp_display_name = config.get('name', comp_name)
+
+    # Рендерим динамическое табло (без перенаправления)
+    return render_template('main_tablo_dynamic.html',
+                         comp_name=comp_name,
+                         comp_display_name=comp_display_name,
+                         config=config)
+
+
 @app.route('/tablo/<comp_name>/<kata_key>')
 def tablo(comp_name, kata_key):
     """Итоговая таблица результатов"""
@@ -1318,5 +1387,52 @@ def internal_error(error):
     return render_template('error.html', message='Внутренняя ошибка сервера'), 500
 
 
+# ==================== WEBSOCKET HANDLERS ====================
+
+@socketio.on('connect')
+def handle_connect():
+    """Обработка подключения клиента"""
+    print(f'✅ Client connected: {request.sid}')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Обработка отключения клиента"""
+    print(f'⚠️ Client disconnected: {request.sid}')
+
+@socketio.on('join_tablo')
+def handle_join_tablo(data):
+    """Клиент присоединяется к комнате главного табло"""
+    comp_name = data.get('comp_name')
+    print(f'📥 Received join_tablo request: {data}')
+
+    if comp_name:
+        room = f'tablo_{comp_name}'
+        join_room(room)
+        print(f'✅ Client {request.sid} joined room: {room}')
+
+        # Отправляем текущую дисциплину клиенту
+        comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+        config_file = os.path.join(comp_path, 'config.json')
+        if os.path.exists(config_file):
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            discipline = config.get('main_tablo_discipline', '')
+            print(f'📤 Sending current discipline to client: {discipline}')
+            emit('tablo_update', {
+                'comp_name': comp_name,
+                'discipline_key': discipline
+            })
+        else:
+            print(f'⚠️ Config file not found: {config_file}')
+
+@socketio.on('leave_tablo')
+def handle_leave_tablo(data):
+    """Клиент покидает комнату главного табло"""
+    comp_name = data.get('comp_name')
+    if comp_name:
+        room = f'tablo_{comp_name}'
+        leave_room(room)
+        print(f'👋 Client {request.sid} left room: {room}')
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)

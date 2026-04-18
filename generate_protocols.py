@@ -930,45 +930,6 @@ def _save_discipline_protocol(comp_path: str, payload: Dict[str, Any]) -> Dict[s
 
     wb.save(xlsx_path)
 
-    # Финальный CSV: Тори/Уке — полная строка как в протоколе (имя||детали)
-    csv_path = os.path.join(save_dir, f"{name_base}.csv")
-    csv_headers = [
-        "номер пары",
-        "Тори",
-        "Уке",
-        "Сумма",
-        "Место",
-        "Судья 1",
-        "Судья 2",
-        "Судья 3",
-        "Судья 4",
-        "Судья 5",
-    ]
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=csv_headers)
-        w.writeheader()
-        for r in payload["final_rows"]:
-            td = _decode_participant_cell(r.get("Тори", ""))
-            ud = _decode_participant_cell(r.get("Уке", ""))
-            t_cell = str(r.get("Тори", "")).strip() or (
-                f"{td['name']}||{td['detail']}" if td["detail"] else td["name"]
-            )
-            u_cell = str(r.get("Уке", "")).strip() or (
-                f"{ud['name']}||{ud['detail']}" if ud["detail"] else ud["name"]
-            )
-            w.writerow({
-                "номер пары": r.get("номер пары", ""),
-                "Тори": t_cell,
-                "Уке": u_cell,
-                "Сумма": r.get("Сумма", ""),
-                "Место": r.get("Место", ""),
-                "Судья 1": r.get("Судья 1", ""),
-                "Судья 2": r.get("Судья 2", ""),
-                "Судья 3": r.get("Судья 3", ""),
-                "Судья 4": r.get("Судья 4", ""),
-                "Судья 5": r.get("Судья 5", ""),
-            })
-
     _build_pdf(
         pdf_path,
         comp_path,
@@ -978,7 +939,7 @@ def _save_discipline_protocol(comp_path: str, payload: Dict[str, Any]) -> Dict[s
         payload["final_rows"],
         payload["judge_pair_pages"],
     )
-    return {"xlsx": xlsx_path, "pdf": pdf_path, "csv": csv_path}
+    return {"xlsx": xlsx_path, "pdf": pdf_path}
 
 
 def protocol_readiness(comp_path: str) -> dict:
@@ -1039,13 +1000,13 @@ def generate_competition_protocols(
             # Проверяем, что это финальный этап
             cfg = _load_stage(comp_path, dk)
             current_stage = cfg.get('current_stage', 'final')
-            # Копируем только если текущий этап - финал
+            # Копируем только если текущий этап - финал (только xlsx и pdf, без csv)
             if current_stage == 'final':
                 for fp in files:
                     if not os.path.isfile(fp):
                         continue
                     ext = os.path.splitext(fp)[1].lower()
-                    if ext not in (".xlsx", ".pdf", ".csv"):
+                    if ext not in (".xlsx", ".pdf"):
                         continue
                     dst = os.path.join(results_dir, os.path.basename(fp))
                     shutil.copy2(fp, dst)

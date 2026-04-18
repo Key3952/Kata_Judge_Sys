@@ -142,6 +142,38 @@
         </div>
 
         <div class="card mt-3">
+            <div class="card-header">
+                <h5 class="mb-0">📺 Главное Табло</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-3">
+                    Выберите дисциплину, которая будет отображаться на главном табло соревнования.
+                </p>
+                {% if disciplines %}
+                <div class="mb-3">
+                    <label class="form-label small">Текущая дисциплина:</label>
+                    <select id="mainTabloSelect" class="form-select form-select-sm">
+                        <option value="">Не выбрана</option>
+                        {% for disc in disciplines %}
+                        <option value="{{ disc.key }}" {% if config.main_tablo_discipline == disc.key %}selected{% endif %}>
+                            {{ disc.name }} ({{ 'Финал' if disc.stage.current_stage == 'final' else 'Предварительные' }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="button" onclick="setMainTablo('{{ comp_name }}')" class="btn btn-accent btn-sm w-100">
+                    💾 Сохранить выбор
+                </button>
+                <a href="{{ url_for('main_tablo', comp_name=comp_name) }}" target="_blank" class="btn btn-outline-primary btn-sm w-100 mt-2">
+                    📺 Открыть главное табло
+                </a>
+                {% else %}
+                <p class="text-muted small mb-0">Добавьте дисциплины для настройки главного табло</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mt-3">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h5 class="mb-0">📑 Протоколы</h5>
                 <button type="button" id="btnGenAllProtocols" onclick="generateProtocols('{{ comp_name }}', null, this)"
@@ -152,15 +184,9 @@
             <div class="card-body">
                 <p class="small text-muted mb-2">
                     <strong>Структура файлов:</strong><br>
-                    • <strong>Предварительные:</strong> <code>дисциплина/protokol.xlsx</code>, <code>.pdf</code>, <code>.csv</code><br>
-                    • <strong>Финал:</strong> <code>дисциплина/final/protokol ФИНАЛ.xlsx</code>, <code>.pdf</code>, <code>.csv</code><br>
-                    • <strong>Итоги:</strong> <code>results/</code> — только финальные протоколы всех дисциплин
-                </p>
-                <p class="small text-muted mb-2">
-                    <strong>Содержимое протоколов:</strong><br>
-                    • Лист "Результаты" — итоговая таблица с оценками судей<br>
-                    • Листы судей — детализация оценок по каждой паре<br>
-                    • PDF — красивый протокол с градиентами и логотипами
+                    • <strong>Предварительные:</strong> <code>дисциплина/protokol.xlsx</code>, <code>.pdf</code><br>
+                    • <strong>Финал:</strong> <code>дисциплина/final/protokol ФИНАЛ.xlsx</code>, <code>.pdf</code><br>
+                    • <strong>Итоги:</strong> <code>results/</code> — только финальные протоколы (xlsx, pdf)
                 </p>
                 <div id="protocolStatusBlock" class="small">
                     {% if protocol_status.disciplines %}
@@ -379,6 +405,45 @@ function toggleCompetition(compName, status) {
         location.reload();
     })
     .catch(e => alert('Ошибка: ' + e));
+}
+
+function setMainTablo(compName) {
+    const select = document.getElementById('mainTabloSelect');
+    const disciplineKey = select.value;
+
+    fetch(`/admin/${compName}/set-main-tablo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ discipline_key: disciplineKey })
+    })
+    .then(r => r.json())
+    .then((data) => {
+        if (data.success) {
+            // Показываем уведомление
+            const msg = disciplineKey ?
+                `Главное табло установлено на: ${select.options[select.selectedIndex].text}` :
+                'Главное табло отключено';
+
+            // Создаем временное уведомление
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-success alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3';
+            alert.style.zIndex = '9999';
+            alert.innerHTML = `
+                ${msg}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            document.body.appendChild(alert);
+
+            // Автоматически скрываем через 3 секунды
+            setTimeout(() => {
+                alert.classList.remove('show');
+                setTimeout(() => alert.remove(), 150);
+            }, 3000);
+        } else {
+            alert('Ошибка: ' + (data.message || 'Неизвестная ошибка'));
+        }
+    })
+    .catch(e => alert('Ошибка сети: ' + e));
 }
 
 // Добавляем стили для анимации
