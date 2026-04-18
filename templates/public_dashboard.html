@@ -72,12 +72,12 @@
                     <a href="{{ url_for('judge_page', comp_name=comp.name, kata_key=disc.key) }}"
                        class="discipline-btn">
                         ⚖️ {{ disc.name }}
-                        <small>Форма судьи</small>
+                        <small>Форма судьи · {{ disc.stage_label }}</small>
                     </a>
                     <a href="{{ url_for('tablo', comp_name=comp.name, kata_key=disc.key) }}"
                        class="discipline-btn tablo-link">
                         📊 {{ disc.name }}
-                        <small>Табло</small>
+                        <small>Табло · {{ disc.stage_label }}</small>
                     </a>
                 </div>
                 {% endfor %}

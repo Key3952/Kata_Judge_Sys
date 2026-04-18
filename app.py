@@ -2,7 +2,7 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 import os
 from datetime import datetime
-from csv_manager import CSVManager, CompetitionCSVManager
+from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer
 from scoring import calculate_pair_final_score
 import json
 
@@ -57,13 +57,25 @@ def ensure_stage_config(comp_path: str, kata_key: str) -> dict:
             cfg.update(loaded or {})
         except Exception:
             pass
-    # Ensure stage folders and files exist
+    # Ensure stage files exist:
+    # prelim -> root discipline files; final -> subfolder final/
     CompetitionCSVManager.create_discipline_structure(comp_path, kata_key)
-    for stage in ('prelim', 'final'):
-        stage_pairs = CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, stage)
-        stage_final = CompetitionCSVManager.get_stage_final_protocol_path(comp_path, kata_key, stage)
-        CSVManager.ensure_csv_exists(stage_pairs, CompetitionCSVManager.PAIRS_HEADERS)
-        CSVManager.ensure_csv_exists(stage_final, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+    disc_path = os.path.join(comp_path, kata_key)
+    CSVManager.ensure_csv_exists(os.path.join(disc_path, 'participants_list.csv'), CompetitionCSVManager.PAIRS_HEADERS)
+    CSVManager.ensure_csv_exists(os.path.join(disc_path, 'final_protocol.csv'), CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+    final_dir = os.path.join(disc_path, 'final')
+    os.makedirs(os.path.join(final_dir, 'protocols'), exist_ok=True)
+    CSVManager.ensure_csv_exists(os.path.join(final_dir, 'participants_list.csv'), CompetitionCSVManager.PAIRS_HEADERS)
+    CSVManager.ensure_csv_exists(os.path.join(final_dir, 'final_protocol.csv'), CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+
+    # <=3 пар -> только прямой финал
+    try:
+        root_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
+        if len(root_pairs) <= 3 and len(root_pairs) > 0:
+            cfg['mode'] = 'final_only'
+            cfg['current_stage'] = 'final'
+    except Exception:
+        pass
     with open(cfg_path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     return cfg
@@ -75,9 +87,15 @@ def stage_for_ops(comp_path: str, kata_key: str) -> str:
 
 
 def get_stage_files(comp_path: str, kata_key: str, stage: str) -> dict:
+    disc_path = os.path.join(comp_path, kata_key)
+    is_final = str(stage).lower() == 'final'
+    if is_final:
+        base = os.path.join(disc_path, 'final')
+    else:
+        base = disc_path
     return {
-        'participants': CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, stage),
-        'final_protocol': CompetitionCSVManager.get_stage_final_protocol_path(comp_path, kata_key, stage),
+        'participants': os.path.join(base, 'participants_list.csv'),
+        'final_protocol': os.path.join(base, 'final_protocol.csv'),
     }
 
 
@@ -233,7 +251,7 @@ def serve_competition_files(filename):
     return redirect(url_for('public_dashboard'))
 
 
-# ==================== АДМИНИСТРАТИВНАЯ ЧАСТЬ ====================
+# ==================== АДМИНИСТРАТИВНАЯ ПАНЕЛЬ ====================
 
 @app.route('/')
 def index():
@@ -245,7 +263,7 @@ def index():
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
-    """Вход в админку"""
+    """Вход в административную панель"""
     if request.method == 'POST':
         password = request.form['password']
         if password == ADMIN_PASSWORD:
@@ -258,7 +276,7 @@ def admin_login():
 
 @app.route('/admin/logout')
 def admin_logout():
-    """Выход из админки"""
+    """Выход из административной панели"""
     session.pop('admin', None)
     return redirect(url_for('public_dashboard'))
 
@@ -310,26 +328,13 @@ def config_competition():
         try:
             os.makedirs(comp_full_path, exist_ok=True)
             
-            # Обработка баннера
-            banner_path = ''
-            if 'banner_file' in request.files:
-                banner_file = request.files['banner_file']
-                if banner_file and banner_file.filename != '':
-                    # Сохраняем баннер в папку соревнования
-                    from werkzeug.utils import secure_filename
-                    filename = secure_filename(banner_file.filename)
-                    banner_full_path = os.path.join(comp_full_path, 'banner_' + filename)
-                    banner_file.save(banner_full_path)
-                    # Сохраняем относительный путь в config
-                    banner_path = os.path.join(comp_folder_name, 'banner_' + filename).replace('\\', '/')
-            
             # Создаем файл config.json с информацией
             config = {
                 'name': comp_name,
                 'created': datetime.now().isoformat(),
                 'status': 'open',
                 'disciplines': [],
-                'banner': banner_path
+                'banner': ''
             }
             with open(os.path.join(comp_full_path, 'config.json'), 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
@@ -462,17 +467,25 @@ def discipline_stage_action(comp_name, kata_key):
     top_n = max(1, min(16, top_n))
     cfg['final_top_n'] = top_n
 
+    root_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
+    if len(root_pairs) <= 3 and len(root_pairs) > 0:
+        cfg['mode'] = 'final_only'
+        cfg['current_stage'] = 'final'
+        cfg['status'] = 'open'
+        CSVManager.write_csv(
+            os.path.join(disc_path, 'final', 'participants_list.csv'),
+            root_pairs,
+            CompetitionCSVManager.PAIRS_HEADERS,
+        )
+        with open(_stage_config_path(comp_path, kata_key), 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        return jsonify({'success': True, 'stage': cfg, 'message': 'До 3 пар: автоматически прямой финал'})
+
     if action == 'set_prelim':
         cfg['mode'] = 'prelim_final'
         cfg['current_stage'] = 'prelim'
         cfg['status'] = 'open'
-        # sync prelim participants from master list
-        master_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
-        CSVManager.write_csv(
-            CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'prelim'),
-            master_pairs,
-            CompetitionCSVManager.PAIRS_HEADERS,
-        )
+        # prelim данные уже в корне дисциплины — ничего не переносим
     elif action == 'set_final_only':
         cfg['mode'] = 'final_only'
         cfg['current_stage'] = 'final'
@@ -484,29 +497,23 @@ def discipline_stage_action(comp_name, kata_key):
             CompetitionCSVManager.PAIRS_HEADERS,
         )
     elif action == 'open_final':
-        prelim_final_path = CompetitionCSVManager.get_stage_final_protocol_path(comp_path, kata_key, 'prelim')
+        prelim_final_path = os.path.join(disc_path, 'final_protocol.csv')
         prelim_results = CSVManager.read_csv(prelim_final_path)
         prelim_results = [r for r in prelim_results if str(r.get('Сумма', '')).strip()]
-        prelim_results.sort(
-            key=lambda r: (-float(str(r.get('Сумма', '0')).replace(',', '.')), int(r.get('номер пары', 0)))
-        )
+        prelim_results = sort_prelim_results_for_final_transfer(prelim_results)
         winners = prelim_results[:top_n]
-        prelim_pairs = CSVManager.read_csv(CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'prelim'))
+        prelim_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
         by_num = {str(p.get('номер пары', '')).strip(): p for p in prelim_pairs}
         final_pairs = []
         for w in winners:
             p = by_num.get(str(w.get('номер пары', '')).strip())
             if p:
                 final_pairs.append(p)
+        final_pairs_path = os.path.join(disc_path, 'final', 'participants_list.csv')
         CSVManager.write_csv(
-            CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'final'),
+            final_pairs_path,
             final_pairs,
             CompetitionCSVManager.PAIRS_HEADERS,
-        )
-        CSVManager.write_csv(
-            CompetitionCSVManager.get_stage_final_protocol_path(comp_path, kata_key, 'final'),
-            [],
-            CompetitionCSVManager.FINAL_PROTOCOL_HEADERS,
         )
         cfg['mode'] = 'prelim_final'
         cfg['current_stage'] = 'final'
@@ -743,14 +750,10 @@ def register_participants(comp_name, kata_key):
             pairs_file = os.path.join(disc_path, 'participants_list.csv')
             CSVManager.write_csv(pairs_file, pairs_data, CompetitionCSVManager.PAIRS_HEADERS)
             cfg = ensure_stage_config(comp_path, kata_key)
-            CSVManager.write_csv(
-                CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'prelim'),
-                pairs_data,
-                CompetitionCSVManager.PAIRS_HEADERS,
-            )
+            # prelim хранится в корне дисциплины (уже записано выше)
             if cfg.get('mode') == 'final_only':
                 CSVManager.write_csv(
-                    CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'final'),
+                    os.path.join(disc_path, 'final', 'participants_list.csv'),
                     pairs_data,
                     CompetitionCSVManager.PAIRS_HEADERS,
                 )
@@ -1050,7 +1053,7 @@ def get_judge_scores(comp_name, kata_key, judge, pos, tori, uke):
     """Получить существующие оценки судьи"""
     comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
     stage = stage_for_ops(comp_path, kata_key)
-    protocol_path = CompetitionCSVManager.get_stage_protocol_path(comp_path, kata_key, stage, judge, pos, tori, uke)
+    protocol_path = CompetitionCSVManager.resolve_stage_protocol_path(comp_path, kata_key, stage, judge, pos, tori, uke)
     details = {}
     rows = CSVManager.read_csv(protocol_path)
     for row in rows:
@@ -1088,9 +1091,12 @@ def public_dashboard():
                     for folder in os.listdir(comp_path):
                         folder_path = os.path.join(comp_path, folder)
                         if os.path.isdir(folder_path) and folder not in ('__pycache__', 'results'):
+                            stage_cfg = ensure_stage_config(comp_path, folder)
+                            stage_label = 'Финал' if stage_cfg.get('current_stage') == 'final' else 'Предварительные встречи'
                             disciplines.append({
                                 'key': folder,
-                                'name': get_discipline_display_name(folder)
+                                'name': get_discipline_display_name(folder),
+                                'stage_label': stage_label,
                             })
                     
                     competitions.append({
@@ -1185,7 +1191,7 @@ def tablo(comp_name, kata_key):
             for judge_pos in effective_positions:
                 judge_obj = next((j for j in judges if str(j.get('место', '')).strip() == str(judge_pos)), {})
                 judge_name = judge_obj.get('ФИО', '')
-                protocol_path = CompetitionCSVManager.get_stage_protocol_path(
+                protocol_path = CompetitionCSVManager.resolve_stage_protocol_path(
                     comp_path, kata_key, stage, judge_name, judge_pos, pair.get('Тори_ФИО', ''), pair.get('Уке_ФИО', '')
                 )
                 scores = {}
@@ -1313,4 +1319,4 @@ def internal_error(error):
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)

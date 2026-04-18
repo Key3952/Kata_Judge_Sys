@@ -151,8 +151,16 @@
             </div>
             <div class="card-body">
                 <p class="small text-muted mb-2">
-                    В папке каждой дисциплины: <code>main_protocol.xlsx</code>, <code>details_protocol.xlsx</code> и PDF.
-                    В <code>results/</code> у соревнования — сводные итоговые Excel и PDF.
+                    <strong>Структура файлов:</strong><br>
+                    • <strong>Предварительные:</strong> <code>дисциплина/protokol.xlsx</code>, <code>.pdf</code>, <code>.csv</code><br>
+                    • <strong>Финал:</strong> <code>дисциплина/final/protokol ФИНАЛ.xlsx</code>, <code>.pdf</code>, <code>.csv</code><br>
+                    • <strong>Итоги:</strong> <code>results/</code> — только финальные протоколы всех дисциплин
+                </p>
+                <p class="small text-muted mb-2">
+                    <strong>Содержимое протоколов:</strong><br>
+                    • Лист "Результаты" — итоговая таблица с оценками судей<br>
+                    • Листы судей — детализация оценок по каждой паре<br>
+                    • PDF — красивый протокол с градиентами и логотипами
                 </p>
                 <div id="protocolStatusBlock" class="small">
                     {% if protocol_status.disciplines %}

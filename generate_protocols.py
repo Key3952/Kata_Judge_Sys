@@ -2,10 +2,49 @@ import csv
 import io
 import json
 import os
+import shutil
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
+
+from csv_manager import CompetitionCSVManager, normalize_protocol_token, safe_float, safe_int
+
+# Импортируем функцию для красивых названий дисциплин
+def get_discipline_display_name(key: str) -> str:
+    """Получает красивое название дисциплины"""
+    display_names = {
+        'nagenokata': 'Nage-no-kata',
+        'katamenokata': 'Katame-no-kata',
+        'kimenokata': 'Kime-no-kata',
+        'junokata': 'Ju-no-kata',
+        'kodokangoshinjutsu': 'Kodokan Goshin-jutsu',
+        'koshikinokata': 'Koshiki-no-kata',
+        'itsutsunokata': 'Itsutsu-no-kata',
+    }
+    return display_names.get(key.lower(), key)
+
+
+def _participant_detail_line(pair_row: dict, prefix: str) -> str:
+    """prefix: 'Тори_' или 'Уке_'"""
+    parts = [
+        pair_row.get(f'{prefix}год рождения', '').strip(),
+        pair_row.get(f'{prefix}разряд', '').strip(),
+        pair_row.get(f'{prefix}кю', '').strip(),
+        pair_row.get(f'{prefix}СШ', '').strip(),
+        pair_row.get(f'{prefix}тренер', '').strip(),
+    ]
+    return ', '.join(p for p in parts if p)
+
+
+def encode_participant_for_protocol(pair_row: dict, role: str) -> str:
+    """role: 'Тори' или 'Уке'. В CSV: Имя||остальное через запятую"""
+    prefix = f'{role}_'
+    name = pair_row.get(f'{prefix}ФИО', '').strip()
+    detail = _participant_detail_line(pair_row, prefix)
+    if detail:
+        return f'{name}||{detail}'
+    return name
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -13,6 +52,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -87,7 +127,8 @@ def _load_stage(comp_path: str, discipline_key: str) -> Dict[str, str]:
 
 def _stage_paths(comp_path: str, discipline_key: str, stage: str) -> Dict[str, str]:
     s = "final" if str(stage).lower() == "final" else "prelim"
-    base = os.path.join(comp_path, discipline_key, s)
+    disc_root = os.path.join(comp_path, discipline_key)
+    base = os.path.join(disc_root, "final") if s == "final" else disc_root
     return {
         "pairs": os.path.join(base, "participants_list.csv"),
         "final": os.path.join(base, "final_protocol.csv"),
@@ -128,6 +169,7 @@ def _judge_total(details: List[dict]) -> float:
 
 
 def _safe_sheet_name(name: str, used: set) -> str:
+    """Генерирует безопасное имя листа Excel (макс 31 символ, без спецсимволов)"""
     bad = set('[]:*?/\\')
     n = "".join("_" if ch in bad else ch for ch in name).strip() or "Sheet"
     n = n[:31]
@@ -142,6 +184,7 @@ def _safe_sheet_name(name: str, used: set) -> str:
 
 
 def _theme_gradient(score: float) -> str:
+    """Генерирует цвет ячейки на основе оценки (градиент от красного к зеленому)"""
     # палитра как в табло (стандарт)
     p = [
         (230, 124, 115),
@@ -150,7 +193,7 @@ def _theme_gradient(score: float) -> str:
         (171, 201, 120),
         (87, 187, 138),
     ]
-    t = max(0.0, min(1.0, (score or 0.0) / 170.0))
+    t = max(0.0, min(1.0, safe_float(score, 0.0) / 170.0))
     seg = len(p) - 1
     idx = min(seg - 1, int(t * seg))
     lt = t * seg - idx
@@ -180,25 +223,69 @@ def _apply_grid(ws, start_row: int, end_row: int, start_col: int, end_col: int):
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
+def _pair_slug_from_participants_row(p: dict) -> str:
+    t = normalize_protocol_token(p.get("Тори_ФИО", ""))
+    u = normalize_protocol_token(p.get("Уке_ФИО", ""))
+    return f"{t}-{u}"
+
+
+def _normalize_slug_from_filename(slug: str) -> str:
+    """Суффикс файла после _pos_: tori-uke, с тем же правилом, что и для строки пары."""
+    if "-" not in slug:
+        return normalize_protocol_token(slug)
+    left, right = slug.split("-", 1)
+    return f"{normalize_protocol_token(left)}-{normalize_protocol_token(right)}"
+
+
 def _find_protocol_pair(protocol_file: str, pairs: List[dict]) -> Optional[dict]:
-    base = protocol_file[:-4]
-    parts = base.split("_", 2)
+    stem = protocol_file[:-4] if protocol_file.endswith(".csv") else protocol_file
+    parsed = CompetitionCSVManager.parse_protocol_filename(stem)
+    if parsed:
+        _, _, slug_raw = parsed
+        ns = _normalize_slug_from_filename(slug_raw)
+        for p in pairs:
+            k = _pair_slug_from_participants_row(p)
+            parts = k.split("-", 1)
+            rev = f"{parts[1]}-{parts[0]}" if len(parts) == 2 else k
+            if ns == k or ns == rev:
+                return p
+        return None
+    parts = stem.split("_", 2)
     if len(parts) < 3:
         return None
     pair_slug = parts[2]
+    ns = _normalize_slug_from_filename(pair_slug)
     for p in pairs:
-        t = str(p.get("Тори_ФИО", "")).replace(" ", "_")
-        u = str(p.get("Уке_ФИО", "")).replace(" ", "_")
-        if pair_slug in (f"{t}-{u}", f"{u}-{t}"):
+        k = _pair_slug_from_participants_row(p)
+        parts = k.split("-", 1)
+        rev = f"{parts[1]}-{parts[0]}" if len(parts) == 2 else k
+        if ns == k or ns == rev:
             return p
     return None
 
 
-def _write_tablo_sheet(wb: Workbook, comp_name: str, discipline: str, stage_label: str, final_rows: List[dict], judges: List[dict]):
+def _participant_one_cell(encoded: str) -> str:
+    """Одна ячейка: как в протоколе (Имя||детали) или многострочно."""
+    d = _decode_participant_cell(encoded)
+    if d["detail"]:
+        return f"{d['name']}\n{d['detail']}"
+    return d["name"]
+
+
+def _write_tablo_sheet(wb: Workbook, comp_name: str, discipline: str, stage_label: str, final_rows: List[dict], judges: List[dict], pairs: List[dict] = None):
     ws = wb.create_sheet("Результаты")
     judges = judges[:5]
     total_cols = 3 + len(judges) + 2
     end_col_letter = get_column_letter(total_cols)
+
+    # Создаем словарь пар для быстрого доступа
+    pairs_by_num = {}
+    if pairs:
+        for p in pairs:
+            try:
+                pairs_by_num[int(p.get('номер пары', 0))] = p
+            except (ValueError, TypeError):
+                pass
 
     ws.merge_cells(f"A1:{end_col_letter}1")
     ws["A1"] = comp_name
@@ -206,11 +293,18 @@ def _write_tablo_sheet(wb: Workbook, comp_name: str, discipline: str, stage_labe
     ws["A1"].alignment = Alignment(horizontal="center")
     ws["A1"].fill = PatternFill(fill_type="solid", start_color="1A3D5C", end_color="1A3D5C")
 
+    pretty_discipline = discipline.replace("_", "-")
     ws.merge_cells(f"A2:{end_col_letter}2")
-    ws["A2"] = f"{discipline} | {stage_label} | {datetime.now().strftime('%d.%m.%Y')}"
-    ws["A2"].font = Font(size=12, bold=True, color="FFD84A")
-    ws["A2"].alignment = Alignment(horizontal="center")
+    ws["A2"] = pretty_discipline
+    ws["A2"].font = Font(size=14, bold=True, color="FFD84A")
+    ws["A2"].alignment = Alignment(horizontal="left")
     ws["A2"].fill = PatternFill(fill_type="solid", start_color="224F87", end_color="224F87")
+
+    ws.merge_cells(f"A3:{end_col_letter}3")
+    ws["A3"] = stage_label
+    ws["A3"].font = Font(size=11, bold=True, color="FFFFFF")
+    ws["A3"].alignment = Alignment(horizontal="left")
+    ws["A3"].fill = PatternFill(fill_type="solid", start_color="224F87", end_color="224F87")
 
     # Фон под шапкой, включая область под лого
     for rr in range(1, 4):
@@ -220,7 +314,6 @@ def _write_tablo_sheet(wb: Workbook, comp_name: str, discipline: str, stage_labe
             ws.cell(rr, cc).fill = PatternFill(fill_type="solid", start_color="224F87", end_color="224F87")
 
     headers = ["Пара", "Тори", "Уке"] + [f"Судья {j.get('место','')}" for j in judges] + ["Сумма", "Место"]
-    ws.append([])
     ws.append(headers)
     hr = ws.max_row
     hf = PatternFill(fill_type="solid", start_color="2D5A7B", end_color="2D5A7B")
@@ -233,14 +326,34 @@ def _write_tablo_sheet(wb: Workbook, comp_name: str, discipline: str, stage_labe
 
     data_start = ws.max_row + 1
     for row in final_rows:
-        t = _decode_participant_cell(row.get("Тори", ""))["name"]
-        u = _decode_participant_cell(row.get("Уке", ""))["name"]
         judge_vals = []
         for j in judges:
             pos = int(str(j.get("место", 0) or 0))
             v = row.get(f"Судья {pos}", "") if pos else ""
             judge_vals.append(v)
-        line = [row.get("номер пары", ""), t, u] + judge_vals + [row.get("Сумма", ""), row.get("Место", "")]
+
+        # Получаем полную информацию об участниках
+        pair_num = row.get("номер пары", "")
+        tori_cell = row.get("Тори", "")
+        uke_cell = row.get("Уке", "")
+
+        # Если нет закодированной строки с ||, кодируем из pair_obj
+        if pair_num and pairs_by_num:
+            try:
+                pair_obj = pairs_by_num.get(int(pair_num))
+                if pair_obj:
+                    if not tori_cell or "||" not in str(tori_cell):
+                        tori_cell = encode_participant_for_protocol(pair_obj, "Тори")
+                    if not uke_cell or "||" not in str(uke_cell):
+                        uke_cell = encode_participant_for_protocol(pair_obj, "Уке")
+            except (ValueError, TypeError):
+                pass
+
+        line = [
+            pair_num,
+            _participant_one_cell(tori_cell),
+            _participant_one_cell(uke_cell),
+        ] + judge_vals + [row.get("Сумма", ""), row.get("Место", "")]
         ws.append(line)
         r = ws.max_row
         start = 4
@@ -267,10 +380,21 @@ def _write_tablo_sheet(wb: Workbook, comp_name: str, discipline: str, stage_labe
 
     # Границы и авто-таблица
     _apply_grid(ws, 4, ws.max_row, 1, total_cols)
-    for r in range(4, ws.max_row + 1):
-        ws.row_dimensions[r].height = 24
+
+    # Автоматическая высота строк по содержимому
+    for r in range(1, ws.max_row + 1):
+        max_lines = 1
+        for c in range(1, total_cols + 1):
+            cell_value = str(ws.cell(r, c).value or '')
+            lines = cell_value.count('\n') + 1
+            max_lines = max(max_lines, lines)
+        # Устанавливаем высоту: базовая 15 + 12 на каждую дополнительную строку
+        ws.row_dimensions[r].height = 15 + (max_lines - 1) * 12
 
     _autosize(ws)
+
+    # Устанавливаем область печати
+    ws.print_area = f'A1:{get_column_letter(total_cols)}{ws.max_row}'
 
 
 def _details_for_protocol_rows(rows: List[dict]) -> List[dict]:
@@ -467,60 +591,206 @@ def _write_judge_pair_sheet(
     _autosize(ws)
 
 
-def _build_pdf(file_path: str, comp_name: str, discipline: str, stage_label: str, final_rows: List[dict], judge_pair_pages: List[Dict[str, Any]]):
+def escape_xmlish(s: str) -> str:
+    from xml.sax.saxutils import escape
+
+    return escape(str(s or ""))
+
+
+def _pdf_gradient_background(canvas, width: float, height: float) -> None:
+    """Вертикальный «фейд» (несколько стопов сине-голубого, как шапка табло)."""
+    n = 36
+    stops = [
+        (26, 61, 92),
+        (34, 79, 135),
+        (45, 90, 150),
+        (52, 100, 165),
+    ]
+    for i in range(n):
+        t = i / max(1, n - 1)
+        seg = t * (len(stops) - 1)
+        j = int(seg)
+        lt = seg - j
+        j = min(j, len(stops) - 2)
+        r1, g1, b1 = stops[j]
+        r2, g2, b2 = stops[j + 1]
+        r = (r1 + (r2 - r1) * lt) / 255.0
+        g = (g1 + (g2 - g1) * lt) / 255.0
+        b = (b1 + (b2 - b1) * lt) / 255.0
+        canvas.setFillColorRGB(r, g, b)
+        y0 = height * (1 - (i + 1) / n)
+        canvas.rect(0, y0, width, height / n + 1, fill=1, stroke=0)
+
+
+def _build_pdf(
+    file_path: str,
+    comp_path: str,
+    comp_name: str,
+    discipline: str,
+    stage_label: str,
+    final_rows: List[dict],
+    judge_pair_pages: List[Dict[str, Any]],
+):
     fn, fnb = _ensure_pdf_fonts()
     styles = getSampleStyleSheet()
-    title = ParagraphStyle("t", parent=styles["Title"], fontName=fnb, fontSize=16)
-    body = ParagraphStyle("b", parent=styles["Normal"], fontName=fn, fontSize=9)
+    title = ParagraphStyle(
+        "t",
+        parent=styles["Title"],
+        fontName=fnb,
+        fontSize=16,
+        textColor=colors.white,
+        spaceAfter=4,
+    )
+    sub = ParagraphStyle(
+        "sub",
+        parent=styles["Normal"],
+        fontName=fn,
+        fontSize=10,
+        textColor=colors.HexColor("#FFD84A"),
+    )
+    body = ParagraphStyle("b", parent=styles["Normal"], fontName=fn, fontSize=8, leading=10)
+    cell_p = ParagraphStyle("cell", parent=styles["Normal"], fontName=fn, fontSize=7, leading=9)
 
-    doc = SimpleDocTemplate(file_path, pagesize=landscape(A4), rightMargin=10 * mm, leftMargin=10 * mm)
+    banner_abs = ""
+    try:
+        cfg_fp = os.path.join(comp_path, "config.json")
+        if os.path.isfile(cfg_fp):
+            with open(cfg_fp, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            b = (cfg.get("banner") or "").strip()
+            if b:
+                cand = b if os.path.isabs(b) else os.path.join(comp_path, b)
+                if os.path.isfile(cand):
+                    banner_abs = cand
+    except Exception:
+        pass
+
+    def _cell_html(val: str) -> Paragraph:
+        from xml.sax.saxutils import escape
+
+        raw = str(val or "")
+        if "||" in raw:
+            a, _, b = raw.partition("||")
+            inner = f"{escape(a.strip())}<br/>{escape(b.strip())}"
+        else:
+            inner = escape(raw)
+        return Paragraph(inner, cell_p)
+
+    page_size = landscape(A4)
+    margin = 12 * mm
+
+    def on_page(canvas, doc):
+        w, h = page_size
+        canvas.saveState()
+        _pdf_gradient_background(canvas, w, h)
+        logo = os.path.join(os.path.dirname(__file__), "static", "federation_logo.png")
+        if os.path.exists(logo):
+            try:
+                canvas.drawImage(
+                    ImageReader(logo),
+                    w - 40 * mm,
+                    h - 28 * mm,
+                    width=32 * mm,
+                    height=24 * mm,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+        if banner_abs:
+            try:
+                canvas.drawImage(
+                    ImageReader(banner_abs),
+                    margin,
+                    h - 26 * mm,
+                    width=52 * mm,
+                    height=20 * mm,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+        canvas.setStrokeColor(colors.HexColor("#FFFFFF"))
+        canvas.setLineWidth(0.8)
+        canvas.line(margin, h - 32 * mm, w - margin, h - 32 * mm)
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(
+        file_path,
+        pagesize=page_size,
+        rightMargin=margin,
+        leftMargin=margin,
+        topMargin=38 * mm,
+        bottomMargin=12 * mm,
+    )
+
+    pretty_disc = get_discipline_display_name(discipline)
     story = [
-        Paragraph(comp_name, title),
+        Paragraph(escape_xmlish(comp_name), title),
         Spacer(1, 2 * mm),
-        Paragraph(f"{discipline} | {stage_label}", body),
-        Spacer(1, 5 * mm),
+        Paragraph(f"{escape_xmlish(pretty_disc)} · {escape_xmlish(stage_label)}", sub),
+        Spacer(1, 6 * mm),
     ]
 
     headers = ["Пара", "Тори", "Уке", "Сумма", "Место"]
-    rows = []
+    rows_pdf: List[List[Any]] = [headers]
     for r in final_rows:
-        rows.append([
-            str(r.get("номер пары", "")),
-            _decode_participant_cell(r.get("Тори", ""))["name"],
-            _decode_participant_cell(r.get("Уке", ""))["name"],
-            str(r.get("Сумма", "")),
-            str(r.get("Место", "")),
-        ])
-    t = Table([headers] + rows, repeatRows=1)
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2D5A7B")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), fnb),
-        ("FONTNAME", (0, 1), (-1, -1), fn),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-    ]))
+        t_raw = str(r.get("Тори", "")).strip()
+        u_raw = str(r.get("Уке", "")).strip()
+        if not t_raw:
+            td = _decode_participant_cell(r.get("Тори", ""))
+            t_raw = f"{td['name']}||{td['detail']}" if td["detail"] else td["name"]
+        if not u_raw:
+            ud = _decode_participant_cell(r.get("Уке", ""))
+            u_raw = f"{ud['name']}||{ud['detail']}" if ud["detail"] else ud["name"]
+        rows_pdf.append(
+            [
+                str(r.get("номер пары", "")),
+                _cell_html(t_raw),
+                _cell_html(u_raw),
+                str(r.get("Сумма", "")),
+                str(r.get("Место", "")),
+            ]
+        )
+    t = Table(rows_pdf, repeatRows=1, colWidths=[18 * mm, 62 * mm, 62 * mm, 22 * mm, 18 * mm])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2D5A7B")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), fnb),
+                ("FONTSIZE", (0, 0), (-1, 0), 9),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#94A3B8")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#F8FAFC"), colors.white]),
+            ]
+        )
+    )
     story.append(t)
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 8 * mm))
 
     for p in judge_pair_pages:
-        story.append(Paragraph(f"Судья: {p['judge']} | Пара: {p['pair']}", body))
+        story.append(Paragraph(f"<b>Судья:</b> {escape_xmlish(p['judge'])} &nbsp;|&nbsp; <b>Пара:</b> {escape_xmlish(p['pair'])}", body))
         story.append(Spacer(1, 2 * mm))
         dh = ["№", "Техника", "m1", "m2", "med", "big", "+/-", "forgotten", "score"]
         dr = p["rows"]
         td = Table([dh] + dr, repeatRows=1)
-        td.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2D5A7B")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), fnb),
-            ("FONTNAME", (0, 1), (-1, -1), fn),
-            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-            ("FONTSIZE", (0, 0), (-1, -1), 7),
-        ]))
+        td.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2D5A7B")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), fnb),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#94A3B8")),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#F1F5F9"), colors.white]),
+                ]
+            )
+        )
         story.append(td)
         story.append(Spacer(1, 5 * mm))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
 
 
 def _collect_discipline_payload(comp_path: str, comp_display_name: str, dk: str, technique_map: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -530,33 +800,46 @@ def _collect_discipline_payload(comp_path: str, comp_display_name: str, dk: str,
 
     sp = _stage_paths(comp_path, dk, stage)
     pairs = _read_csv_rows(sp["pairs"])
+    # Читаем финальный протокол ТОЛЬКО из правильного пути для текущего этапа
     final_rows = _read_csv_rows(sp["final"])
-    if not final_rows:
-        # fallback
-        final_rows = _read_csv_rows(os.path.join(comp_path, dk, "final_protocol.csv"))
 
     judges = _read_csv_rows(os.path.join(comp_path, dk, "judges_list.csv"))
     judges_sorted = sorted(judges, key=lambda x: int(str(x.get("место", 9999) or 9999)))
     judges_for_tablo = judges_sorted[:5]
 
-    pair_by_slug = {}
+    pair_by_slug: Dict[str, dict] = {}
     for p in pairs:
-        t = str(p.get("Тори_ФИО", "")).replace(" ", "_")
-        u = str(p.get("Уке_ФИО", "")).replace(" ", "_")
-        pair_by_slug[f"{t}-{u}"] = p
-        pair_by_slug[f"{u}-{t}"] = p
+        k = _pair_slug_from_participants_row(p)
+        pair_by_slug[k] = p
+        pr = k.split("-", 1)
+        if len(pr) == 2:
+            pair_by_slug[f"{pr[1]}-{pr[0]}"] = p
 
     judge_pair_pages = []
-    protocols_dir = sp["protocols"] if os.path.isdir(sp["protocols"]) else os.path.join(comp_path, dk, "protocols")
-    if os.path.isdir(protocols_dir):
+    # Явно используем путь из stage_paths для текущего этапа
+    protocols_dir = sp["protocols"]
+    if not os.path.isdir(protocols_dir):
+        # Fallback на старую структуру только если новой нет
+        protocols_dir = os.path.join(comp_path, dk, "protocols")
+        if not os.path.isdir(protocols_dir):
+            print(f"⚠️ Протоколы судей не найдены для {dk} ({stage})")
+            protocols_dir = None
+
+    if protocols_dir and os.path.isdir(protocols_dir):
         for pf in sorted(os.listdir(protocols_dir)):
             if not pf.endswith(".csv"):
                 continue
-            parts = pf[:-4].split("_", 2)
-            if len(parts) < 3:
-                continue
-            jn, jp, slug = parts[0], parts[1], parts[2]
-            pair = pair_by_slug.get(slug)
+            stem = pf[:-4]
+            parsed = CompetitionCSVManager.parse_protocol_filename(stem)
+            if parsed:
+                jn, jp, slug_raw = parsed
+            else:
+                legacy = stem.split("_", 2)
+                if len(legacy) < 3:
+                    continue
+                jn, jp, slug_raw = legacy[0], legacy[1], legacy[2]
+            ns = _normalize_slug_from_filename(slug_raw)
+            pair = pair_by_slug.get(ns)
             if not pair:
                 pair = _find_protocol_pair(pf, pairs)
             if not pair:
@@ -606,14 +889,27 @@ def _collect_discipline_payload(comp_path: str, comp_display_name: str, dk: str,
 
 def _save_discipline_protocol(comp_path: str, payload: Dict[str, Any]) -> Dict[str, str]:
     dk = payload["discipline"]
+    stage = payload["stage"]
     stage_label = payload["stage_label"]
-    name_base = f"{dk} protokol" + (" ФИНАЛ" if payload["stage"] == "final" else "")
-    xlsx_path = os.path.join(comp_path, dk, f"{name_base}.xlsx")
-    pdf_path = os.path.join(comp_path, dk, f"{name_base}.pdf")
+
+    # Определяем папку для сохранения протоколов
+    if stage == "final":
+        # Финальные протоколы сохраняем в подпапку final/
+        save_dir = os.path.join(comp_path, dk, "final")
+        name_base = f"{dk} protokol ФИНАЛ"
+    else:
+        # Предварительные протоколы в корне дисциплины
+        save_dir = os.path.join(comp_path, dk)
+        name_base = f"{dk} protokol"
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    xlsx_path = os.path.join(save_dir, f"{name_base}.xlsx")
+    pdf_path = os.path.join(save_dir, f"{name_base}.pdf")
 
     wb = Workbook()
     wb.remove(wb.active)
-    _write_tablo_sheet(wb, payload["comp_name"], dk, stage_label, payload["final_rows"], payload["judges"])
+    _write_tablo_sheet(wb, payload["comp_name"], dk, stage_label, payload["final_rows"], payload["judges"], payload.get("pairs"))
 
     used = {"ТАБЛО"}
     for page in payload["judge_pair_pages"]:
@@ -634,14 +930,12 @@ def _save_discipline_protocol(comp_path: str, payload: Dict[str, Any]) -> Dict[s
 
     wb.save(xlsx_path)
 
-    # Финальный CSV с полной детализацией участников
-    csv_path = os.path.join(comp_path, dk, f"{name_base}.csv")
+    # Финальный CSV: Тори/Уке — полная строка как в протоколе (имя||детали)
+    csv_path = os.path.join(save_dir, f"{name_base}.csv")
     csv_headers = [
         "номер пары",
         "Тори",
-        "Тори детали",
         "Уке",
-        "Уке детали",
         "Сумма",
         "Место",
         "Судья 1",
@@ -656,12 +950,16 @@ def _save_discipline_protocol(comp_path: str, payload: Dict[str, Any]) -> Dict[s
         for r in payload["final_rows"]:
             td = _decode_participant_cell(r.get("Тори", ""))
             ud = _decode_participant_cell(r.get("Уке", ""))
+            t_cell = str(r.get("Тори", "")).strip() or (
+                f"{td['name']}||{td['detail']}" if td["detail"] else td["name"]
+            )
+            u_cell = str(r.get("Уке", "")).strip() or (
+                f"{ud['name']}||{ud['detail']}" if ud["detail"] else ud["name"]
+            )
             w.writerow({
                 "номер пары": r.get("номер пары", ""),
-                "Тори": td["name"],
-                "Тори детали": td["detail"],
-                "Уке": ud["name"],
-                "Уке детали": ud["detail"],
+                "Тори": t_cell,
+                "Уке": u_cell,
                 "Сумма": r.get("Сумма", ""),
                 "Место": r.get("Место", ""),
                 "Судья 1": r.get("Судья 1", ""),
@@ -671,7 +969,15 @@ def _save_discipline_protocol(comp_path: str, payload: Dict[str, Any]) -> Dict[s
                 "Судья 5": r.get("Судья 5", ""),
             })
 
-    _build_pdf(pdf_path, payload["comp_name"], dk, stage_label, payload["final_rows"], payload["judge_pair_pages"])
+    _build_pdf(
+        pdf_path,
+        comp_path,
+        payload["comp_name"],
+        dk,
+        stage_label,
+        payload["final_rows"],
+        payload["judge_pair_pages"],
+    )
     return {"xlsx": xlsx_path, "pdf": pdf_path, "csv": csv_path}
 
 
@@ -725,9 +1031,26 @@ def generate_competition_protocols(
             files = _save_discipline_protocol(comp_path, payload)
             generated["disciplines"][dk] = [files["xlsx"], files["pdf"], files["csv"]]
 
-        # итоги в results/: только ссылки на дисциплинарные файлы (как индекс)
+        # итоги в results/: копии ТОЛЬКО финальных протоколов каждой дисциплины + индекс
         results_dir = os.path.join(comp_path, "results")
         os.makedirs(results_dir, exist_ok=True)
+        copied_files: List[str] = []
+        for dk, files in generated["disciplines"].items():
+            # Проверяем, что это финальный этап
+            cfg = _load_stage(comp_path, dk)
+            current_stage = cfg.get('current_stage', 'final')
+            # Копируем только если текущий этап - финал
+            if current_stage == 'final':
+                for fp in files:
+                    if not os.path.isfile(fp):
+                        continue
+                    ext = os.path.splitext(fp)[1].lower()
+                    if ext not in (".xlsx", ".pdf", ".csv"):
+                        continue
+                    dst = os.path.join(results_dir, os.path.basename(fp))
+                    shutil.copy2(fp, dst)
+                    copied_files.append(dst)
+
         index_xlsx = os.path.join(results_dir, "results_index.xlsx")
         wb = Workbook()
         ws = wb.active
@@ -736,7 +1059,7 @@ def generate_competition_protocols(
         for dk, files in generated["disciplines"].items():
             ws.append([dk, " ; ".join(files)])
         wb.save(index_xlsx)
-        generated["results"] = [index_xlsx]
+        generated["results"] = [index_xlsx] + copied_files
 
         return {"success": True, "generated": generated}
     except Exception as e:

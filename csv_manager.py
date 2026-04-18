@@ -2,8 +2,9 @@
 import csv
 import os
 import json
+import re
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 class CSVManager:
     """Менеджер для работы с CSV файлами участников и судей"""
@@ -155,6 +156,51 @@ class CSVManager:
         return suggestions
 
 
+def sort_prelim_results_for_final_transfer(prelim_results: List[dict]) -> List[dict]:
+    """Порядок переноса в финал: по возрастанию «Место»; если места нет — по убыванию «Сумма», затем «номер пары»."""
+
+    def key(r: dict):
+        m = str(r.get('Место', '')).strip()
+        try:
+            s = float(str(r.get('Сумма', '0')).replace(',', '.'))
+        except ValueError:
+            s = 0.0
+        pn = int(str(r.get('номер пары', 0)) or 0)
+        if m.isdigit():
+            ip = int(m)
+            if ip > 0:
+                return (0, ip, 0.0, 0)
+        return (1, 0, -s, pn)
+
+    return sorted(prelim_results, key=key)
+
+
+def safe_float(value: str, default: float = 0.0) -> float:
+    """Безопасное преобразование строки в float"""
+    try:
+        return float(str(value).replace(',', '.'))
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_int(value: str, default: int = 0) -> int:
+    """Безопасное преобразование строки в int"""
+    try:
+        return int(str(value).strip())
+    except (ValueError, TypeError):
+        return default
+
+
+def normalize_protocol_token(s: str) -> str:
+    """Единая нормализация ФИО/фрагментов для имён файлов протоколов (пробелы → _)."""
+    if s is None:
+        return ""
+    t = str(s).strip()
+    t = re.sub(r"[\s/\\]+", "_", t)
+    t = re.sub(r"_+", "_", t)
+    return t.strip("_")
+
+
 class CompetitionCSVManager:
     """Менеджер для работы с CSV файлами соревнования"""
     
@@ -190,23 +236,24 @@ class CompetitionCSVManager:
         CSVManager.ensure_csv_exists(participants_file, CompetitionCSVManager.PAIRS_HEADERS)
         CSVManager.ensure_csv_exists(judges_file, CompetitionCSVManager.JUDGES_LIST_HEADERS)
         CSVManager.ensure_csv_exists(final_protocol_file, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
-        for stage in ('prelim', 'final'):
-            stage_path = os.path.join(disc_path, stage)
-            os.makedirs(stage_path, exist_ok=True)
-            os.makedirs(os.path.join(stage_path, 'protocols'), exist_ok=True)
-            CSVManager.ensure_csv_exists(
-                os.path.join(stage_path, 'participants_list.csv'),
-                CompetitionCSVManager.PAIRS_HEADERS
-            )
-            CSVManager.ensure_csv_exists(
-                os.path.join(stage_path, 'final_protocol.csv'),
-                CompetitionCSVManager.FINAL_PROTOCOL_HEADERS
-            )
+        # Для final используем отдельную подпапку; prelim хранится в корне дисциплины
+        final_path = os.path.join(disc_path, 'final')
+        os.makedirs(final_path, exist_ok=True)
+        os.makedirs(os.path.join(final_path, 'protocols'), exist_ok=True)
+        CSVManager.ensure_csv_exists(
+            os.path.join(final_path, 'participants_list.csv'),
+            CompetitionCSVManager.PAIRS_HEADERS
+        )
+        CSVManager.ensure_csv_exists(
+            os.path.join(final_path, 'final_protocol.csv'),
+            CompetitionCSVManager.FINAL_PROTOCOL_HEADERS
+        )
 
     @staticmethod
     def get_stage_path(comp_base_path: str, discipline_key: str, stage: str) -> str:
         disc_path = CompetitionCSVManager.get_discipline_path(comp_base_path, discipline_key)
-        return os.path.join(disc_path, CompetitionCSVManager.normalize_stage(stage))
+        st = CompetitionCSVManager.normalize_stage(stage)
+        return os.path.join(disc_path, 'final') if st == 'final' else disc_path
 
     @staticmethod
     def get_stage_participants_path(comp_base_path: str, discipline_key: str, stage: str) -> str:
@@ -227,13 +274,68 @@ class CompetitionCSVManager:
         """Возвращает путь до файла протокола судьи"""
         disc_path = CompetitionCSVManager.get_discipline_path(comp_base_path, discipline_key)
         protocols_path = os.path.join(disc_path, 'protocols')
-        return os.path.join(protocols_path, f'{judge_name}_{judge_position}_{tori}-{uke}.csv')
+        jn = normalize_protocol_token(judge_name)
+        tt = normalize_protocol_token(tori)
+        uu = normalize_protocol_token(uke)
+        return os.path.join(protocols_path, f'{jn}_{judge_position}_{tt}-{uu}.csv')
+
+    @staticmethod
+    def resolve_protocol_path(
+        comp_base_path: str, discipline_key: str, judge_name: str, judge_position: int, tori: str, uke: str,
+    ) -> str:
+        """Чтение: нормализованное имя файла или legacy с сырыми ФИО."""
+        primary = CompetitionCSVManager.get_protocol_path(
+            comp_base_path, discipline_key, judge_name, judge_position, tori, uke
+        )
+        if os.path.isfile(primary):
+            return primary
+        disc_path = CompetitionCSVManager.get_discipline_path(comp_base_path, discipline_key)
+        protocols_path = os.path.join(disc_path, 'protocols')
+        legacy = os.path.join(protocols_path, f'{judge_name}_{judge_position}_{tori}-{uke}.csv')
+        if os.path.isfile(legacy):
+            return legacy
+        return primary
 
     @staticmethod
     def get_stage_protocol_path(comp_base_path: str, discipline_key: str, stage: str, judge_name: str, judge_position: int, tori: str, uke: str) -> str:
         stage_path = CompetitionCSVManager.get_stage_path(comp_base_path, discipline_key, stage)
         protocols_path = os.path.join(stage_path, 'protocols')
-        return os.path.join(protocols_path, f'{judge_name}_{judge_position}_{tori}-{uke}.csv')
+        jn = normalize_protocol_token(judge_name)
+        tt = normalize_protocol_token(tori)
+        uu = normalize_protocol_token(uke)
+        return os.path.join(protocols_path, f'{jn}_{judge_position}_{tt}-{uu}.csv')
+
+    @staticmethod
+    def resolve_stage_protocol_path(
+        comp_base_path: str, discipline_key: str, stage: str,
+        judge_name: str, judge_position: int, tori: str, uke: str,
+    ) -> str:
+        """Путь к CSV протокола: предпочитает нормализованное имя; если файла нет — legacy с сырыми ФИО."""
+        primary = CompetitionCSVManager.get_stage_protocol_path(
+            comp_base_path, discipline_key, stage, judge_name, judge_position, tori, uke
+        )
+        if os.path.isfile(primary):
+            return primary
+        stage_path = CompetitionCSVManager.get_stage_path(comp_base_path, discipline_key, stage)
+        protocols_path = os.path.join(stage_path, 'protocols')
+        legacy = os.path.join(protocols_path, f'{judge_name}_{judge_position}_{tori}-{uke}.csv')
+        if os.path.isfile(legacy):
+            return legacy
+        return primary
+
+    @staticmethod
+    def parse_protocol_filename(stem: str) -> Optional[Tuple[str, str, str]]:
+        """
+        Разбор имени без .csv: ..._<1-5>_<tori-uke slug>.
+        Возвращает (judge_name, position_str, pair_slug_raw).
+        """
+        m = re.search(r'_([1-5])_(.+)$', stem)
+        if not m:
+            return None
+        pos = m.group(1)
+        slug = m.group(2)
+        judge = stem[: m.start()].rstrip("_")
+        return (judge, pos, slug)
 
     @staticmethod
     def save_judge_scores(comp_base_path: str, discipline_key: str, pair_number: int, 
@@ -257,7 +359,7 @@ class CompetitionCSVManager:
     @staticmethod
     def read_judge_scores(comp_base_path: str, discipline_key: str, judge_name: str, judge_position: int, tori: str, uke: str) -> Dict[str, Dict]:
         """Читает детали оценок судьи из файла"""
-        protocol_path = CompetitionCSVManager.get_protocol_path(
+        protocol_path = CompetitionCSVManager.resolve_protocol_path(
             comp_base_path, discipline_key, judge_name, judge_position, tori, uke
         )
         

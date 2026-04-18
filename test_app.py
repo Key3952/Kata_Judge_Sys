@@ -2,7 +2,7 @@ import unittest
 import os
 import tempfile
 import shutil
-from csv_manager import CSVManager, CompetitionCSVManager
+from csv_manager import CSVManager, CompetitionCSVManager, normalize_protocol_token, sort_prelim_results_for_final_transfer
 from scoring import calculate_pair_final_score
 from technics import DISCIPLINE_ROWS_BY_KEY
 
@@ -61,7 +61,7 @@ class TestCompetitionCSVManager(unittest.TestCase):
         self.assertTrue(os.path.exists(disc_path))
         self.assertTrue(os.path.exists(os.path.join(disc_path, 'protocols')))
         self.assertTrue(os.path.exists(os.path.join(disc_path, 'final_protocol.csv')))
-        self.assertTrue(os.path.exists(os.path.join(disc_path, 'prelim', 'participants_list.csv')))
+        self.assertTrue(os.path.exists(os.path.join(disc_path, 'participants_list.csv')))
         self.assertTrue(os.path.exists(os.path.join(disc_path, 'final', 'participants_list.csv')))
 
     def test_read_judge_scores(self):
@@ -98,6 +98,43 @@ class TestScoring(unittest.TestCase):
     def test_calculate_pair_final_score_more_than_five(self):
         final = calculate_pair_final_score([85.0, 88.0, 90.0, 87.0, 89.0, 100.0], judge_count=6)
         self.assertEqual(final, 264.0)
+
+
+class TestPrelimFinalTransfer(unittest.TestCase):
+    def test_sort_by_place_then_sum(self):
+        rows = [
+            {'номер пары': '3', 'Сумма': '100', 'Место': '2'},
+            {'номер пары': '1', 'Сумма': '200', 'Место': '1'},
+            {'номер пары': '2', 'Сумма': '300', 'Место': '3'},
+        ]
+        out = sort_prelim_results_for_final_transfer(rows)
+        self.assertEqual([r['номер пары'] for r in out], ['1', '3', '2'])
+
+    def test_fallback_sum_when_no_place(self):
+        rows = [
+            {'номер пары': '1', 'Сумма': '50', 'Место': ''},
+            {'номер пары': '2', 'Сумма': '90', 'Место': ''},
+        ]
+        out = sort_prelim_results_for_final_transfer(rows)
+        self.assertEqual([r['номер пары'] for r in out], ['2', '1'])
+
+
+class TestProtocolFilenameParsing(unittest.TestCase):
+    def test_parse_protocol_stem(self):
+        p = CompetitionCSVManager.parse_protocol_filename('John_Doe_1_Ivan_Petrov-Petr_Sidorov')
+        self.assertIsNotNone(p)
+        jn, jp, slug = p
+        self.assertEqual(jp, '1')
+        self.assertEqual(jn, 'John_Doe')
+        self.assertIn('Ivan', slug)
+        self.assertIn('Petrov', slug)
+
+    def test_normalize_tokens_match(self):
+        self.assertEqual(
+            normalize_protocol_token('Иван Иванов'),
+            normalize_protocol_token('Иван_Иванов'),
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

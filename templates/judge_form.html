@@ -100,6 +100,23 @@
         .scoring-table { font-size: 0.75rem; }
         .penalty-btn { padding: 4px 6px; }
     }
+
+    /* Анимация пульсации для кнопки завершения */
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7); }
+        50% { box-shadow: 0 0 0 10px rgba(40, 167, 69, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0); }
+    }
+
+    .pulse-animation {
+        animation: pulse 2s infinite;
+    }
+
+    /* Стиль для заблокированной кнопки */
+    #finishButton:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
 </style>
 {% endblock %}
 
@@ -204,7 +221,7 @@
     </div>
 
     <div class="mt-4 mb-5 d-flex gap-3">
-        <button type="button" class="btn btn-success btn-lg shadow flex-grow-1" onclick="forceSave()">💾 Завершить оценивание</button>
+        <button type="button" id="finishButton" class="btn btn-success btn-lg shadow flex-grow-1" onclick="forceSave()" disabled>💾 Завершить оценивание</button>
         <a href="/" class="btn btn-outline-contrast btn-lg">Выход</a>
     </div>
 </form>
@@ -286,13 +303,18 @@ function confirmSelection() {
     positionSelect.disabled = true;
     pairSelect.disabled = true;
     
-    // Меняем текст кнопки
+    // Меняем текст кнопки подтверждения
     const confirmButton = document.querySelector('button[onclick="confirmSelection()"]');
-    confirmButton.textContent = 'Выбор зафиксирован';
+    confirmButton.textContent = 'Выбор зафиксирован ✓';
     confirmButton.disabled = true;
     confirmButton.classList.remove('btn-primary');
     confirmButton.classList.add('btn-success');
     
+    // Активируем кнопку завершения оценивания
+    const finishButton = document.getElementById('finishButton');
+    finishButton.disabled = false;
+    finishButton.classList.add('pulse-animation');
+
     // Показываем блок оценок
     toggleUI();
 }
@@ -386,6 +408,14 @@ async function saveScores(isFinal = false) {
 }
 
 async function forceSave() {
+    const finishButton = document.getElementById('finishButton');
+
+    // Проверяем, что кнопка активна (выбор подтвержден)
+    if (finishButton.disabled) {
+        alert('Сначала подтвердите выбор судьи, места и пары!');
+        return;
+    }
+
     const judge = document.getElementById('judge_name').value;
     const pos = document.getElementById('judge_position').value;
     const pair = document.getElementById('pair_number').value;
@@ -395,11 +425,20 @@ async function forceSave() {
         return;
     }
 
+    // Блокируем кнопку во время сохранения
+    finishButton.disabled = true;
+    finishButton.textContent = '⏳ Сохранение...';
+
     const result = await saveScores(true);
     if (result && result.success) {
+        finishButton.textContent = '✅ Сохранено!';
+        finishButton.classList.remove('btn-success');
+        finishButton.classList.add('btn-outline-success');
         alert("Оценки успешно сохранены и итог обновлен в финальном протоколе.");
-        window.location.reload();
+        setTimeout(() => window.location.reload(), 1000);
     } else {
+        finishButton.disabled = false;
+        finishButton.textContent = '💾 Завершить оценивание';
         alert("Ошибка при сохранении оценок.");
     }
 }

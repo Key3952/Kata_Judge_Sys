@@ -127,17 +127,6 @@
         background: transparent;
     }
 
-    /* Hide number spinners (Year column) */
-    input[type="number"]::-webkit-outer-spin-button,
-    input[type="number"]::-webkit-inner-spin-button {
-        -webkit-appearance: none;
-        margin: 0;
-    }
-    input[type="number"] {
-        -moz-appearance: textfield;
-        appearance: textfield;
-    }
-
     /* ФИКС: Автодополнение внутри input-group (судьи) */
     .input-group > .autocomplete-wrapper {
         flex: 1 1 auto;
@@ -213,8 +202,8 @@
                             <th class="text-center" style="width: 70px;">№</th>
                             <th class="text-center" style="width: 118px;">Роль</th>
                             <th>ФИО Участника</th>
-                            <th style="width: 100px;">Год</th>
-                            <th style="width: 78px;">Разряд</th>
+                            <th style="width: 145px;">Дата рождения</th>
+                            <th style="width: 150px;">Разряд</th>
                             <th style="width: 70px;">КЮ</th>
                             <th>СШ (Клуб)</th>
                             <th>Тренер</th>
@@ -275,6 +264,18 @@ function createInput(name, placeholder, type="text", isAutocomplete=false) {
     return wrapper;
 }
 
+function normalizeBirthInputValue(value) {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(s)) {
+        const [dd, mm, yyyy] = s.split('.');
+        return `${yyyy}-${mm}-${dd}`;
+    }
+    if (/^\d{4}$/.test(s)) return `${s}-01-01`;
+    return '';
+}
+
 // Добавление новой пары
 function addPair(data = null) {
     const tbody = document.getElementById('pairsList');
@@ -305,12 +306,12 @@ function addPair(data = null) {
     `;
 
     const fields = ['name', 'birth', 'rank', 'kyu', 'school', 'coach'];
-    const placeholders = ['ФИО', 'Год', 'Разряд', 'КЮ', 'СШ/Клуб', 'Тренер'];
+    const placeholders = ['ФИО', 'Дата рождения', 'Разряд', 'КЮ', 'СШ/Клуб', 'Тренер'];
     const dataMap = { 'name': '_ФИО', 'birth': '_год рождения', 'rank': '_разряд', 'kyu': '_кю', 'school': '_СШ', 'coach': '_тренер' };
 
     fields.forEach((f, i) => {
         const isName = f === 'name';
-        const type = f === 'birth' ? 'number' : 'text';
+        const type = f === 'birth' ? 'date' : 'text';
 
         const tInp = createInput(`pair_${id}_tori_${f}`, placeholders[i], type, isName);
         const uInp = createInput(`pair_${id}_uke_${f}`, placeholders[i], type, isName);
@@ -318,6 +319,10 @@ function addPair(data = null) {
         if (data) {
             tInp.querySelector('input').value = data['Тори' + dataMap[f]] || '';
             uInp.querySelector('input').value = data['Уке' + dataMap[f]] || '';
+            if (f === 'birth') {
+                tInp.querySelector('input').value = normalizeBirthInputValue(data['Тори' + dataMap[f]]);
+                uInp.querySelector('input').value = normalizeBirthInputValue(data['Уке' + dataMap[f]]);
+            }
         }
 
         tr1.querySelector(`.${f}-td`).appendChild(tInp);
@@ -333,6 +338,8 @@ function addPair(data = null) {
     attachColumnAC(tr2.querySelector('.school-td input'), 'СШ');
     attachColumnAC(tr1.querySelector('.coach-td input'), 'тренер');
     attachColumnAC(tr2.querySelector('.coach-td input'), 'тренер');
+    attachRankAC(tr1.querySelector('.rank-td input'));
+    attachRankAC(tr2.querySelector('.rank-td input'));
 }
 
 function deletePair(id) {
@@ -426,6 +433,105 @@ function attachAC(row) {
     });
 }
 
+function attachRankAC(input) {
+    if (!input) return;
+    const wrapper = input.closest('.autocomplete-wrapper');
+    if (!wrapper) return;
+    let results = wrapper.querySelector('.autocomplete-results');
+    if (!results) {
+        results = document.createElement('div');
+        results.className = 'autocomplete-results';
+        wrapper.appendChild(results);
+    }
+    let currentIndex = -1;
+
+    const rankOptions = [
+        '1 взрослый',
+        '2 взрослый',
+        '3 взрослый',
+        '1 юношеский',
+        '2 юношеский',
+        '3 юношеский',
+        'КМС',
+        'МС',
+        'МСМК'
+    ];
+
+    const highlight = () => {
+        const items = results.querySelectorAll('.autocomplete-item');
+        items.forEach((item, i) => {
+            item.classList.toggle('highlighted', i === currentIndex);
+        });
+    };
+
+    const selectItem = (item) => {
+        input.value = item.textContent;
+        results.style.display = 'none';
+    };
+
+    input.addEventListener('input', () => {
+        const q = input.value.trim().toLowerCase();
+        currentIndex = -1;
+
+        const filtered = rankOptions.filter(opt => opt.toLowerCase().includes(q));
+
+        results.innerHTML = '';
+        if (filtered.length && q.length > 0) {
+            results.style.display = 'block';
+            filtered.forEach(val => {
+                const div = document.createElement('div');
+                div.className = 'autocomplete-item';
+                div.textContent = val;
+                div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
+                results.appendChild(div);
+            });
+        } else {
+            results.style.display = 'none';
+        }
+    });
+
+    input.addEventListener('focus', () => {
+        if (!input.value.trim()) {
+            currentIndex = -1;
+            results.innerHTML = '';
+            results.style.display = 'block';
+            rankOptions.forEach(val => {
+                const div = document.createElement('div');
+                div.className = 'autocomplete-item';
+                div.textContent = val;
+                div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
+                results.appendChild(div);
+            });
+        }
+    });
+
+    input.addEventListener('keydown', (e) => {
+        const items = results.querySelectorAll('.autocomplete-item');
+        if (e.key === 'Tab' && !e.shiftKey && items.length > 0 && results.style.display === 'block') {
+            e.preventDefault();
+            const idx = currentIndex < 0 ? 0 : currentIndex;
+            selectItem(items[idx]);
+            return;
+        }
+        if (items.length === 0) return;
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            currentIndex = (currentIndex + 1) % items.length;
+            highlight();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            currentIndex = (currentIndex - 1 + items.length) % items.length;
+            highlight();
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (currentIndex >= 0) selectItem(items[currentIndex]);
+        } else if (e.key === 'Escape') {
+            results.style.display = 'none';
+        }
+    });
+}
+
 function attachColumnAC(input, field) {
     if (!input) return;
     const wrapper = input.closest('.autocomplete-wrapper');
@@ -507,11 +613,13 @@ function fetchParticipantInfo(name, row) {
         .then(info => {
             const id = row.dataset.pairId;
             const role = row.querySelector('.role-label').classList.contains('role-tori') ? 'tori' : 'uke';
-            const mapping = { 'год рождения': 'birth', 'разряд': 'rank', 'кю': 'kyu', 'СШ': 'school', 'тренер': 'coach' };
+            const mapping = { 'год рождения': 'birth', 'дата рождения': 'birth', 'разряд': 'rank', 'кю': 'kyu', 'СШ': 'school', 'тренер': 'coach' };
 
             for (let [key, field] of Object.entries(mapping)) {
                 const el = document.querySelector(`[name="pair_${id}_${role}_${field}"]`);
-                if (el && info[key] !== undefined && info[key] !== null) el.value = info[key];
+                if (el && info[key] !== undefined && info[key] !== null) {
+                    el.value = field === 'birth' ? normalizeBirthInputValue(info[key]) : info[key];
+                }
             }
         });
 }
@@ -676,60 +784,48 @@ function initJudges(existing = []) {
     }
 }
 
-// Сохранение судьи в глобальный CSV
-async function saveJudgeToGlobalCSV(name) {
-    try {
-        const response = await fetch('/api/judges/save', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ name: name })
-        });
-        const data = await response.json();
-        if (!data.success) {
-            console.warn('Не удалось сохранить судью в CSV:', data.error);
-        }
-    } catch (e) {
-        console.error('Ошибка при сохранении судьи:', e);
-    }
+// Сохранение судьи в глобальный CSV (происходит при submit формы)
+function saveJudgeToGlobalCSV(name) {
+    // Судьи сохраняются автоматически при отправке формы
+    console.log('Судья будет сохранен при отправке формы:', name);
 }
 
+let autosaveTimeout = null;
+let isSaving = false;
+
 function autosave() {
+    if (isSaving) return;
+
     const formData = new FormData(document.getElementById('registrationForm'));
     const data = Object.fromEntries(formData.entries());
 
-    // Проверяем имена судей через API перед сохранением
-    let validationPromises = [];
-    Object.keys(data).forEach((k) => {
-        if (!k.startsWith('judge_') || !k.endsWith('_name')) return;
-        const judgeName = data[k]?.trim() || '';
-        if (judgeName) {
-            validationPromises.push(
-                isValidJudgeName(judgeName).then(isValid => ({
-                    key: k,
-                    isValid: isValid,
-                    name: judgeName
-                }))
-            );
+    // Проверяем, есть ли хоть какие-то данные для сохранения
+    const hasData = Object.values(data).some(v => String(v).trim() !== '');
+    if (!hasData) return;
+
+    isSaving = true;
+
+    fetch(window.location.pathname, {
+        method: 'POST',
+        body: new URLSearchParams(data),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    })
+    .then(response => {
+        if (response.ok) {
+            console.log('Автосохранение выполнено успешно');
+        } else {
+            console.warn('Автосохранение: ошибка сервера');
         }
+    })
+    .catch(err => console.warn('Автосохранение не удалось:', err))
+    .finally(() => {
+        isSaving = false;
     });
+}
 
-    Promise.all(validationPromises).then(results => {
-        // Очищаем невалидные имена судей перед сохранением
-        results.forEach(result => {
-            if (!result.isValid) {
-                console.warn(`Судья (${result.name}) не найден в списке - не сохраняется`);
-                data[result.key] = '';
-            }
-        });
-
-        fetch(window.location.pathname, {
-            method: 'POST',
-            body: new URLSearchParams(data),
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-        }).catch(err => console.log('Autosave failed', err));
-    }).catch(err => console.log('Validation failed', err));
+function scheduleAutosave() {
+    if (autosaveTimeout) clearTimeout(autosaveTimeout);
+    autosaveTimeout = setTimeout(autosave, 2500);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -740,8 +836,69 @@ document.addEventListener('DOMContentLoaded', () => {
     const backLink = document.getElementById('backLink');
     if (backLink) backLink.href = `/admin/${comp_name}`;
 
-    // Autosave every 2.5 seconds
-    setInterval(autosave, 2500);
+    // Обработка Enter и стрелок для перехода между полями
+    document.addEventListener('keydown', function(e) {
+        if (!e.target.matches('input[type="text"], input[type="date"], input[type="number"]')) return;
+
+        // Если открыто автодополнение, не обрабатываем навигацию
+        const wrapper = e.target.closest('.autocomplete-wrapper');
+        if (wrapper) {
+            const results = wrapper.querySelector('.autocomplete-results');
+            if (results && results.style.display === 'block' && results.querySelectorAll('.autocomplete-item').length > 0) {
+                return; // Пусть автодополнение обрабатывает стрелки
+            }
+        }
+
+        const formInputs = Array.from(document.querySelectorAll('input[type="text"], input[type="date"], input[type="number"]')).filter(inp => inp.offsetParent !== null);
+        const currentIndex = formInputs.indexOf(e.target);
+
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (currentIndex >= 0 && currentIndex < formInputs.length - 1) {
+                formInputs[currentIndex + 1].focus();
+            }
+        } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            if (currentIndex >= 0 && currentIndex < formInputs.length - 1) {
+                formInputs[currentIndex + 1].focus();
+            }
+        } else if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            if (currentIndex > 0) {
+                formInputs[currentIndex - 1].focus();
+            }
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            // Находим текущую строку и переходим на поле в той же колонке следующей строки
+            const currentRow = e.target.closest('tr');
+            if (!currentRow) return;
+            const currentCell = e.target.closest('td');
+            if (!currentCell) return;
+            const cellIndex = Array.from(currentRow.cells).indexOf(currentCell);
+            const nextRow = currentRow.nextElementSibling;
+            if (nextRow && nextRow.cells[cellIndex]) {
+                const nextInput = nextRow.cells[cellIndex].querySelector('input');
+                if (nextInput) nextInput.focus();
+            }
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            // Находим текущую строку и переходим на поле в той же колонке предыдущей строки
+            const currentRow = e.target.closest('tr');
+            if (!currentRow) return;
+            const currentCell = e.target.closest('td');
+            if (!currentCell) return;
+            const cellIndex = Array.from(currentRow.cells).indexOf(currentCell);
+            const prevRow = currentRow.previousElementSibling;
+            if (prevRow && prevRow.cells[cellIndex]) {
+                const prevInput = prevRow.cells[cellIndex].querySelector('input');
+                if (prevInput) prevInput.focus();
+            }
+        }
+    });
+
+    // Автосохранение при изменении полей
+    document.getElementById('registrationForm').addEventListener('input', scheduleAutosave);
+    document.getElementById('registrationForm').addEventListener('change', scheduleAutosave);
 
     // Загрузка данных
     fetch(`/api/${comp_name}/${kata_key}/registration-data`)
