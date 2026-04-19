@@ -229,8 +229,10 @@ socketio = SocketIO(
     cors_allowed_origins="*",
     manage_session=False,
     async_mode='threading',
-    logger=True,
-    engineio_logger=True
+    logger=False,
+    engineio_logger=False,
+    ping_timeout=60,
+    ping_interval=25
 )
 
 # Глобальные пути
@@ -1093,12 +1095,30 @@ def save_judge_action(comp_name, kata_key):
     return jsonify({'success': True})
 
 
-@app.route('/api/<comp_name>/<kata_key>/get-judge-scores/<judge>/<int:pos>/<tori>/<uke>')
+@app.route('/api/<comp_name>/<kata_key>/get-judge-scores/<judge>/<pos>/<tori>/<uke>')
 def get_judge_scores(comp_name, kata_key, judge, pos, tori, uke):
     """Получить существующие оценки судьи"""
     comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+
+    disc_path = os.path.join(comp_path, kata_key)
+    if not os.path.isdir(disc_path):
+        return jsonify({'error': 'Discipline not found'}), 404
+
+    try:
+        pos_int = int(pos)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid position'}), 400
+
     stage = stage_for_ops(comp_path, kata_key)
-    protocol_path = CompetitionCSVManager.resolve_stage_protocol_path(comp_path, kata_key, stage, judge, pos, tori, uke)
+    protocol_path = CompetitionCSVManager.resolve_stage_protocol_path(
+        comp_path, kata_key, stage, judge, pos_int, tori, uke
+    )
+
+    if not os.path.exists(protocol_path):
+        return jsonify({}), 200
+
     details = {}
     rows = CSVManager.read_csv(protocol_path)
     for row in rows:
@@ -1109,8 +1129,8 @@ def get_judge_scores(comp_name, kata_key, judge, pos, tori, uke):
         except json.JSONDecodeError:
             detail = {}
         details[tech_name] = detail
-    scores = details
-    return jsonify(scores)
+
+    return jsonify(details)
 
 
 # ==================== СУДЕЙСКАЯ ЧАСТЬ ====================
@@ -1340,26 +1360,10 @@ def tablo(comp_name, kata_key):
     
     final_results = prepare_tablo_results(base_results, pairs)
     
-    rows = []
-    for result in final_results:
-        row = {
-            'номер пары': result['pair_number'],
-            'Тори': result['tori'],
-            'Уке': result['uke'],
-            'Судья 1': '',
-            'Судья 2': '',
-            'Судья 3': '',
-            'Судья 4': '',
-            'Судья 5': '',
-            'Сумма': result['final_score'] if result['final_score'] is not None else '',
-            'Место': result['place'] if result.get('place') is not None else '',
-        }
-        for idx, p in enumerate(effective_positions):
-            if 1 <= p <= 5 and idx < len(result['judge_scores']) and result['judge_scores'][idx] is not None:
-                row[f'Судья {p}'] = result['judge_scores'][idx]
-        rows.append(row)
-    CSVManager.write_csv(final_protocol_path, rows, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
-    
+    # КРИТИЧНО: НЕ перезаписываем final_protocol.csv при просмотре табло!
+    # Файл обновляется ТОЛЬКО через API save-judge-action при сохранении оценок судьи.
+    # Это предотвращает потерю данных при автообновлении табло каждые 5 секунд.
+
     return render_template(
         'tablo.html',
         comp_name=comp_name,
@@ -1392,47 +1396,59 @@ def internal_error(error):
 @socketio.on('connect')
 def handle_connect():
     """Обработка подключения клиента"""
-    print(f'✅ Client connected: {request.sid}')
+    try:
+        print(f'✅ Client connected: {request.sid}')
+    except Exception as e:
+        print(f'Error in connect handler: {e}')
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Обработка отключения клиента"""
-    print(f'⚠️ Client disconnected: {request.sid}')
+    try:
+        print(f'⚠️ Client disconnected: {request.sid}')
+    except Exception as e:
+        print(f'Error in disconnect handler: {e}')
 
 @socketio.on('join_tablo')
 def handle_join_tablo(data):
     """Клиент присоединяется к комнате главного табло"""
-    comp_name = data.get('comp_name')
-    print(f'📥 Received join_tablo request: {data}')
+    try:
+        comp_name = data.get('comp_name')
+        print(f'📥 Received join_tablo request: {data}')
 
-    if comp_name:
-        room = f'tablo_{comp_name}'
-        join_room(room)
-        print(f'✅ Client {request.sid} joined room: {room}')
+        if comp_name:
+            room = f'tablo_{comp_name}'
+            join_room(room)
+            print(f'✅ Client {request.sid} joined room: {room}')
 
-        # Отправляем текущую дисциплину клиенту
-        comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
-        config_file = os.path.join(comp_path, 'config.json')
-        if os.path.exists(config_file):
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            discipline = config.get('main_tablo_discipline', '')
-            print(f'📤 Sending current discipline to client: {discipline}')
-            emit('tablo_update', {
-                'comp_name': comp_name,
-                'discipline_key': discipline
-            })
-        else:
-            print(f'⚠️ Config file not found: {config_file}')
+            # Отправляем текущую дисциплину клиенту
+            comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+            config_file = os.path.join(comp_path, 'config.json')
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                discipline = config.get('main_tablo_discipline', '')
+                print(f'📤 Sending current discipline to client: {discipline}')
+                emit('tablo_update', {
+                    'comp_name': comp_name,
+                    'discipline_key': discipline
+                })
+            else:
+                print(f'⚠️ Config file not found: {config_file}')
+    except Exception as e:
+        print(f'Error in join_tablo handler: {e}')
 
 @socketio.on('leave_tablo')
 def handle_leave_tablo(data):
     """Клиент покидает комнату главного табло"""
-    comp_name = data.get('comp_name')
-    if comp_name:
-        room = f'tablo_{comp_name}'
-        leave_room(room)
-        print(f'👋 Client {request.sid} left room: {room}')
+    try:
+        comp_name = data.get('comp_name')
+        if comp_name:
+            room = f'tablo_{comp_name}'
+            leave_room(room)
+            print(f'👋 Client {request.sid} left room: {room}')
+    except Exception as e:
+        print(f'Error in leave_tablo handler: {e}')
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)

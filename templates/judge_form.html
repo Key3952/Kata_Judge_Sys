@@ -157,8 +157,9 @@
                 </select>
             </div>
         </div>
-        <div class="mt-3 text-center">
-            <button type="button" class="btn btn-primary" onclick="confirmSelection()">Подтвердить выбор</button>
+        <div class="mt-3 text-center d-flex gap-2 justify-content-center">
+            <button type="button" id="confirmButton" class="btn btn-primary" onclick="confirmSelection()">Подтвердить выбор</button>
+            <button type="button" id="resetButton" class="btn btn-outline-secondary" onclick="resetSelection()" style="display: none;">🔄 Перевыбрать</button>
         </div>
     </div>
 
@@ -172,8 +173,8 @@
                             <th>Малая (-1)</th>
                             <th>Средняя (-3)</th>
                             <th>Большая (-5)</th>
-                            <th>Коррект. (±0.5)</th>
                             <th>Забытая (-10)</th>
+                            <th>Коррект. (±0.5)</th>
                             <th>Сумма</th>
                         </tr>
                     </thead>
@@ -195,13 +196,15 @@
 
                             <td>
                                 <div class="penalty-cell">
-                                    <button type="button" class="penalty-btn correct" data-val="-0.5" onclick="tgl(this, 'c_plus')">+0.5</button>
-                                    <button type="button" class="penalty-btn correct" data-val="0.5" onclick="tgl(this, 'c_minus')">-0.5</button>
+                                    <button type="button" class="penalty-btn" data-val="10" onclick="tgl(this, 'forgotten')">-10</button>
                                 </div>
                             </td>
 
                             <td>
-                                <input type="checkbox" class="forgotten-checkbox" onchange="calc()">
+                                <div class="penalty-cell">
+                                    <button type="button" class="penalty-btn correct" data-val="-0.5" onclick="tgl(this, 'c_plus')">+0.5</button>
+                                    <button type="button" class="penalty-btn correct" data-val="0.5" onclick="tgl(this, 'c_minus')">-0.5</button>
+                                </div>
                             </td>
 
                             <td class="score-cell">10.0</td>
@@ -260,12 +263,17 @@ function normalizeDetail(raw) {
     };
 }
 
-function resetScoringUI() {
+function resetScoringUI(force = false) {
+    // КРИТИЧНО: Защита от случайного сброса оценок
+    if (!force && lastLoadedScores) {
+        console.warn('⚠️ Attempted to reset UI with existing scores! Use force=true to override.');
+        return;
+    }
+
+    console.log('Resetting scoring UI', force ? '(forced)' : '');
     state.techniques = techniques.map(() => defaultTechniqueState());
     document.querySelectorAll('#scoringContainer tbody tr').forEach((tr) => {
         tr.querySelectorAll('.penalty-btn').forEach((btn) => btn.classList.remove('active'));
-        const cb = tr.querySelector('.forgotten-checkbox');
-        if (cb) cb.checked = false;
         const sc = tr.querySelector('.score-cell');
         if (sc) sc.textContent = '10.0';
     });
@@ -303,12 +311,16 @@ function confirmSelection() {
     pairSelect.disabled = true;
     
     // Меняем текст кнопки подтверждения
-    const confirmButton = document.querySelector('button[onclick="confirmSelection()"]');
+    const confirmButton = document.getElementById('confirmButton');
     confirmButton.textContent = 'Выбор зафиксирован ✓';
     confirmButton.disabled = true;
     confirmButton.classList.remove('btn-primary');
     confirmButton.classList.add('btn-success');
     
+    // Показываем кнопку перевыбора
+    const resetButton = document.getElementById('resetButton');
+    resetButton.style.display = 'inline-block';
+
     // Активируем кнопку завершения оценивания
     const finishButton = document.getElementById('finishButton');
     finishButton.disabled = false;
@@ -318,13 +330,56 @@ function confirmSelection() {
     toggleUI();
 }
 
+function resetSelection() {
+    // КРИТИЧНО: НЕ сбрасываем оценки! Только разблокируем выбор.
+    console.log('Reset selection called - preserving scores');
+
+    // Разблокируем поля выбора
+    const judgeSelect = document.getElementById('judge_name');
+    const positionSelect = document.getElementById('judge_position');
+    const pairSelect = document.getElementById('pair_number');
+
+    judgeSelect.disabled = false;
+    positionSelect.disabled = false;
+    pairSelect.disabled = false;
+
+    // Возвращаем кнопку подтверждения в исходное состояние
+    const confirmButton = document.getElementById('confirmButton');
+    confirmButton.textContent = 'Подтвердить выбор';
+    confirmButton.disabled = false;
+    confirmButton.classList.remove('btn-success');
+    confirmButton.classList.add('btn-primary');
+
+    // Скрываем кнопку перевыбора
+    const resetButton = document.getElementById('resetButton');
+    resetButton.style.display = 'none';
+
+    // Блокируем кнопку завершения оценивания
+    const finishButton = document.getElementById('finishButton');
+    finishButton.disabled = true;
+    finishButton.classList.remove('pulse-animation');
+
+    // Скрываем блок оценок (но НЕ сбрасываем данные!)
+    document.getElementById('scoringContainer').style.display = 'none';
+}
+
 // Функция для переключения видимости блока оценок
 function toggleUI() {
     const show = ['judge_name', 'judge_position', 'pair_number'].every(id => document.getElementById(id).value !== "");
-    document.getElementById('scoringContainer').style.display = show ? 'block' : 'none';
+    const container = document.getElementById('scoringContainer');
+    const wasVisible = container.style.display === 'block';
+
+    container.style.display = show ? 'block' : 'none';
+
     if (show) {
-        calc();
-        loadExistingScores();
+        // Если блок уже был виден, НЕ перезагружаем оценки
+        if (!wasVisible) {
+            console.log('Showing scoring container for first time, loading scores');
+            loadExistingScores();
+        } else {
+            console.log('Scoring container already visible, preserving state');
+            calc();
+        }
     }
 }
 
@@ -332,11 +387,37 @@ function tgl(btn, key) {
     const row = btn.closest('tr');
     const idx = row.dataset.techIndex;
 
-    btn.classList.toggle('active');
-    const isActive = btn.classList.contains('active');
+    // Специальная обработка для "Забытая"
+    if (key === 'forgotten') {
+        btn.classList.toggle('active');
+        const isActive = btn.classList.contains('active');
+        state.techniques[idx].forgotten = isActive;
 
-    // Сохраняем значение: если активно - берем штраф из data-val, если нет - 0
-    state.techniques[idx][key] = isActive ? parseFloat(btn.dataset.val) : 0;
+        // Если забытая активна, сбрасываем все остальные штрафы
+        if (isActive) {
+            state.techniques[idx].m1 = 0;
+            state.techniques[idx].m2 = 0;
+            state.techniques[idx].med = 0;
+            state.techniques[idx].big = 0;
+            state.techniques[idx].c_plus = 0;
+            state.techniques[idx].c_minus = 0;
+
+            // Деактивируем все кнопки штрафов в этой строке
+            row.querySelectorAll('.penalty-btn').forEach(b => {
+                if (b !== btn) b.classList.remove('active');
+            });
+        }
+    } else {
+        btn.classList.toggle('active');
+        const isActive = btn.classList.contains('active');
+        state.techniques[idx][key] = isActive ? parseFloat(btn.dataset.val) : 0;
+
+        // Если активируем любой штраф, деактивируем "Забытая"
+        if (isActive && state.techniques[idx].forgotten) {
+            state.techniques[idx].forgotten = false;
+            row.querySelector('.penalty-btn[data-val="10"]')?.classList.remove('active');
+        }
+    }
 
     calc();
 }
@@ -347,8 +428,6 @@ function calc() {
 
     document.querySelectorAll('tbody tr').forEach((tr, idx) => {
         const t = state.techniques[idx];
-        const cb = tr.querySelector('.forgotten-checkbox');
-        t.forgotten = cb.checked;
 
         let rowScore = 10.0;
 
@@ -442,40 +521,87 @@ async function forceSave() {
     }
 }
 
-function loadExistingScores() {
-    resetScoringUI();
+// Глобальная переменная для отслеживания последней загрузки
+let lastLoadedScores = null;
 
+function loadExistingScores() {
     const judge = document.getElementById('judge_name').value;
     const pos = document.getElementById('judge_position').value;
     const pair = document.getElementById('pair_number').value;
     const selectedPair = pairs_data.find(p => p['номер пары'] == pair);
+
     if (!selectedPair || !judge || !pos) {
+        console.log('Missing selection data, skipping load');
+        // НЕ сбрасываем UI если данные уже есть
+        if (!lastLoadedScores) {
+            resetScoringUI();
+        }
         calc();
         return;
     }
+
     const tori = selectedPair['Тори_ФИО'];
     const uke = selectedPair['Уке_ФИО'];
-    const url = `/api/{{ comp_name }}/{{ kata_key }}/get-judge-scores/${encodeURIComponent(judge)}/${pos}/${encodeURIComponent(tori)}/${encodeURIComponent(uke)}`;
+    const loadKey = `${judge}_${pos}_${tori}_${uke}`;
+
+    console.log('Loading scores for:', { judge, pos, tori, uke });
+
+    const url = `/api/{{ comp_name }}/{{ kata_key }}/get-judge-scores/${encodeURIComponent(judge)}/${encodeURIComponent(pos)}/${encodeURIComponent(tori)}/${encodeURIComponent(uke)}`;
+
     fetch(url)
-        .then(r => r.json())
+        .then(r => {
+            if (!r.ok) {
+                console.log('API returned error:', r.status);
+                throw new Error('No scores found');
+            }
+            return r.json();
+        })
         .then(details => {
+            console.log('Loaded details:', details);
+
             if (!details || Object.keys(details).length === 0) {
+                console.log('No existing scores found');
+                // Сбрасываем только если это новая загрузка
+                if (lastLoadedScores !== loadKey) {
+                    console.log('New selection, resetting UI');
+                    resetScoringUI(true); // force=true для новой загрузки
+                    lastLoadedScores = loadKey;
+                } else {
+                    console.log('Same selection, preserving current state');
+                }
                 calc();
                 return;
             }
+
+            // КРИТИЧНО: Сбрасываем UI только если это НОВАЯ загрузка
+            console.log('Found existing scores, loading...');
+            resetScoringUI(true); // force=true для загрузки с сервера
+            lastLoadedScores = loadKey;
+
             document.querySelectorAll('#scoringContainer tbody tr').forEach((tr, idx) => {
                 const tech = techniques[idx];
                 const detail = normalizeDetail(details[tech]);
 
+                // Обновляем state
                 state.techniques[idx] = detail;
 
-                const forgottenCb = tr.querySelector('.forgotten-checkbox');
-                if (forgottenCb) forgottenCb.checked = detail.forgotten;
+                // Обновляем UI для кнопки "Забытая"
+                if (detail.forgotten) {
+                    const forgottenBtn = tr.querySelector('.penalty-btn[data-val="10"]');
+                    if (forgottenBtn) forgottenBtn.classList.add('active');
+                }
 
+                // Обновляем UI для остальных кнопок
                 tr.querySelectorAll('.penalty-btn').forEach(btn => {
                     const m = btn.getAttribute('onclick').match(/tgl\(this, '(\w+)'\)/);
                     if (!m) return;
                     const key = m[1];
+
+                    if (key === 'forgotten') {
+                        // Уже обработано выше
+                        return;
+                    }
+
                     const v = detail[key];
                     let isActive = false;
                     if (key === 'c_plus' || key === 'c_minus') {
@@ -486,10 +612,20 @@ function loadExistingScores() {
                     btn.classList.toggle('active', isActive);
                 });
             });
+
+            console.log('Scores loaded successfully');
             calc();
         })
         .catch(e => {
-            console.log('No existing scores', e);
+            console.log('Error loading scores:', e);
+            // Сбрасываем только если это новая загрузка
+            if (lastLoadedScores !== loadKey) {
+                console.log('New selection with error, resetting UI');
+                resetScoringUI(true); // force=true для новой загрузки с ошибкой
+                lastLoadedScores = loadKey;
+            } else {
+                console.log('Same selection with error, preserving current state');
+            }
             calc();
         });
 }
