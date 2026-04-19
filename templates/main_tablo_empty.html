@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Главное Табло - {{ comp_display_name }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .empty-tablo {
+        min-height: 60vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+    }
+    
+    .empty-tablo-content {
+        max-width: 600px;
+        padding: 3rem;
+    }
+    
+    .empty-tablo-icon {
+        font-size: 5rem;
+        margin-bottom: 1.5rem;
+        opacity: 0.3;
+    }
+    
+    .empty-tablo h2 {
+        font-size: 2rem;
+        margin-bottom: 1rem;
+        color: var(--page-text);
+    }
+    
+    .empty-tablo p {
+        font-size: 1.1rem;
+        color: var(--page-text);
+        opacity: 0.7;
+        margin-bottom: 2rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="empty-tablo">
+    <div class="empty-tablo-content">
+        <div class="empty-tablo-icon">📊</div>
+        <h2>Главное Табло</h2>
+        <p>{{ comp_display_name }}</p>
+        <p>Дисциплина для отображения не выбрана.<br>
+        Администратор может выбрать дисциплину в панели управления соревнованием.</p>
+        <a href="{{ url_for('public_dashboard') }}" class="btn btn-primary btn-lg mt-3">
+            ← Вернуться к списку соревнований
+        </a>
+    </div>
+</div>
+{% endblock %}
