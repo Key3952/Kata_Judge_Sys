@@ -1,15 +1,34 @@
 # app.py
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+"""
+Система Судейства Дзюдо Ката - Flask приложение.
+Обновлено с улучшенной безопасностью, валидацией, логированием и кешированием.
+"""
+
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
+import json
+import re
+import logging
 from datetime import datetime
+from functools import wraps
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения
+load_dotenv()
+
+# Импорты из локальных модулей
 from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer
 from scoring import calculate_pair_final_score
-import json
-
-# Импортируем DISCIPLINE_ROWS_BY_KEY из technics.py
 from technics import DISCIPLINE_ROWS_BY_KEY
 from generate_protocols import generate_competition_protocols, protocol_readiness
+from utils import (
+    setup_logging, logger, SecurityUtils, Validator, CacheManager,
+    CSVLockManager, require_admin, require_admin_json, validate_json_request,
+    api_success, api_error, NotFoundError, UnauthorizedError, ForbiddenError,
+    ValidationError, safe_int, safe_float, sanitize_csv_field,
+    format_date_ru, normalize_protocol_token, cached
+)
 
 # Функция для получения красивого названия дисциплины
 def get_discipline_display_name(key):
@@ -218,25 +237,38 @@ def prepare_tablo_results(results: list, pairs: list) -> list:
     return out
 
 
+# ==================== КОНФИГУРАЦИЯ ПРИЛОЖЕНИЯ ====================
+
 app = Flask(__name__, static_folder='static', static_url_path='/static')
-app.config['SECRET_KEY'] = 'your_secret_key_here_change_in_production'
-app.config['SESSION_COOKIE_SECURE'] = False
+
+# Конфигурация из .env
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'False').lower() == 'true'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = os.getenv('SESSION_COOKIE_SAMESITE', 'Lax')
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', '16777216'))
+
+# Настройка логирования
+log_level = os.getenv('LOG_LEVEL', 'INFO')
+log_file = os.getenv('LOG_FILE', 'app.log')
+setup_logging(app, log_level=log_level, log_file=log_file)
+
+app.logger.info("Инициализация приложения...")
 
 # Инициализация SocketIO
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",
+    cors_allowed_origins=os.getenv('SOCKETIO_CORS_ORIGINS', '*'),
     manage_session=False,
-    async_mode='threading',
+    async_mode=os.getenv('SOCKETIO_ASYNC_MODE', 'threading'),
     logger=False,
     engineio_logger=False,
-    ping_timeout=60,
-    ping_interval=25
+    ping_timeout=int(os.getenv('SOCKETIO_PING_TIMEOUT', '60')),
+    ping_interval=int(os.getenv('SOCKETIO_PING_INTERVAL', '25'))
 )
 
 # Глобальные пути
-GLOBAL_DATA_DIR = os.path.dirname(__file__)
+GLOBAL_DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 PARTICIPANTS_CSV = os.path.join(GLOBAL_DATA_DIR, 'participants.csv')
 JUDGES_CSV = os.path.join(GLOBAL_DATA_DIR, 'judges.csv')
 COMPETITIONS_BASE_DIR = os.path.join(GLOBAL_DATA_DIR, 'competitions')
@@ -246,8 +278,8 @@ CSVManager.ensure_csv_exists(PARTICIPANTS_CSV, CompetitionCSVManager.PARTICIPANT
 CSVManager.ensure_csv_exists(JUDGES_CSV, CompetitionCSVManager.JUDGES_HEADERS)
 os.makedirs(COMPETITIONS_BASE_DIR, exist_ok=True)
 
-# Простая аутентификация для админки
-ADMIN_PASSWORD = 'admin123'
+# Админ пароль из .env
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')
 
 
 # ==================== СТАТИЧЕСКИЕ ФАЙЛЫ ====================
@@ -255,12 +287,14 @@ ADMIN_PASSWORD = 'admin123'
 @app.route('/competitions/<path:filename>')
 def serve_competition_files(filename):
     """Служить файлы из папки competitions"""
-    filepath = os.path.join(COMPETITIONS_BASE_DIR, filename)
-    # Проверяем, что путь находится внутри COMPETITIONS_BASE_DIR
-    if os.path.abspath(filepath).startswith(os.path.abspath(COMPETITIONS_BASE_DIR)):
-        if os.path.exists(filepath):
-            from flask import send_file
-            return send_file(filepath)
+    # Защита от directory traversal
+    safe_path = SecurityUtils.sanitize_path(filename, COMPETITIONS_BASE_DIR)
+    if not safe_path:
+        app.logger.warning(f"Попытка доступа к недопустимому пути: {filename}")
+        return redirect(url_for('public_dashboard'))
+    
+    if os.path.exists(safe_path):
+        return send_file(safe_path)
     return redirect(url_for('public_dashboard'))
 
 
@@ -278,12 +312,23 @@ def index():
 def admin_login():
     """Вход в административную панель"""
     if request.method == 'POST':
-        password = request.form['password']
+        password = Validator.clean_string(request.form.get('password', ''), max_len=100)
+        
+        # Валидация
+        if not password:
+            flash('Введите пароль', 'danger')
+            return render_template('login.html')
+        
+        # Проверка пароля
         if password == ADMIN_PASSWORD:
             session['admin'] = True
+            session.permanent = True
+            app.logger.info(f"Админ вошел: IP={request.remote_addr}")
             return redirect(url_for('admin_dashboard'))
         else:
+            app.logger.warning(f"Неверная попытка входа: IP={request.remote_addr}")
             flash('Неверный пароль', 'danger')
+    
     return render_template('login.html')
 
 
@@ -295,38 +340,33 @@ def admin_logout():
 
 
 @app.route('/dashboard/admin')
+@require_admin
 def admin_dashboard():
     """Главная панель администратора"""
-    if not session.get('admin'):
-        return redirect(url_for('admin_login'))
-    
-    # Получаем список соревнований
     competitions = []
     if os.path.exists(COMPETITIONS_BASE_DIR):
         for comp_folder in os.listdir(COMPETITIONS_BASE_DIR):
             comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_folder)
             if os.path.isdir(comp_path):
                 competitions.append(comp_folder)
-    
+
     competitions.sort(reverse=True)
     return render_template('admin_dashboard.html', competitions=competitions)
 
 
 @app.route('/config', methods=['GET', 'POST'])
+@require_admin
 def config_competition():
     """Создание нового соревнования"""
-    if not session.get('admin'):
-        return redirect(url_for('admin_login'))
-    
     if request.method == 'POST':
-        comp_name = request.form.get('comp_name', '').strip()
-        comp_path = request.form.get('comp_path', COMPETITIONS_BASE_DIR).strip()
+        comp_name = Validator.clean_string(request.form.get('comp_name', ''), max_len=100)
+        comp_path = Validator.clean_string(request.form.get('comp_path', COMPETITIONS_BASE_DIR), max_len=500)
         
         if not comp_name:
             flash('Укажите название соревнования', 'danger')
             return render_template('config.html', default_path=COMPETITIONS_BASE_DIR)
         
-        # Нормализуем путь для Windows и Linux
+        # Нормализуем путь
         comp_path = comp_path.replace('\\', os.sep).replace('/', os.sep)
 
         # Проверяем доступ к директории
@@ -335,13 +375,14 @@ def config_competition():
         
         # Создаем папку соревнования
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        comp_folder_name = f"{comp_name}_{timestamp}"
+        # Санитизируем имя папки
+        safe_comp_name = re.sub(r'[^\w\-_]', '_', comp_name)[:50]
+        comp_folder_name = f"{safe_comp_name}_{timestamp}"
         comp_full_path = os.path.join(comp_path, comp_folder_name)
         
         try:
             os.makedirs(comp_full_path, exist_ok=True)
             
-            # Создаем файл config.json с информацией
             config = {
                 'name': comp_name,
                 'created': datetime.now().isoformat(),
@@ -352,9 +393,11 @@ def config_competition():
             with open(os.path.join(comp_full_path, 'config.json'), 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
             
+            app.logger.info(f"Создано соревнование: {comp_name}")
             flash(f'Соревнование "{comp_name}" создано', 'success')
             return redirect(url_for('edit_competition', comp_name=comp_folder_name))
         except Exception as e:
+            app.logger.error(f"Ошибка создания соревнования: {e}")
             flash(f'Ошибка при создании соревнования: {str(e)}', 'danger')
     
     return render_template('config.html', default_path=COMPETITIONS_BASE_DIR)
