@@ -55,7 +55,7 @@
                         <tbody>
                             {% for disc in disciplines %}
                             <tr>
-                                <td><a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}" target="_blank" class="link-body-emphasis"><strong>{{ disc.name }}</strong></a></td>
+                                <td><a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}" class="link-body-emphasis"><strong>{{ disc.name }}</strong></a></td>
                                 <td>{{ disc.pair_count }}</td>
                                 <td>
                                     <div class="small">
@@ -75,7 +75,7 @@
                                 </td>
                                 <td>
                                     <a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}"
-                                       target="_blank" class="btn btn-sm btn-primary" title="Откроется в новой вкладке">
+                                       class="btn btn-sm btn-primary" title="Редактировать участников">
                                         ✏️
                                     </a>
                                     <a href="{{ url_for('tablo', comp_name=comp_name, kata_key=disc.key) }}"
