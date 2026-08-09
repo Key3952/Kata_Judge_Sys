@@ -5,12 +5,17 @@
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 
 db = SQLAlchemy()
+
+
+def utc_now():
+    """Возвращает текущее время в UTC (timezone-aware)"""
+    return datetime.now(timezone.utc)
 
 
 class Participant(db.Model):
@@ -78,7 +83,7 @@ class Competition(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
     folder_name = db.Column(db.String(255), nullable=False, unique=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=utc_now)
     status = db.Column(db.String(50), default='open')  # open, closed
     banner = db.Column(db.String(500), default='')
     

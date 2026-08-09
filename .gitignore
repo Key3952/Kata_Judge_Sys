@@ -1,8 +1,16 @@
 ```
-# Environment variables
+# Environment and temporary files
 .env
 .env.local
-.env.*
+*.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Editors
+.vscode/
+.idea/
 
 # Python specific
 __pycache__/
@@ -10,43 +18,48 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-env/
-venv/
-.venv/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.DS_Store
-Thumbs.db
-
-# Database
-*.db
-
-# Dependencies
-node_modules/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# Build and distribution artifacts
-dist/
-build/
+*.so
 *.egg-info/
 .eggs/
-
-# Testing
-.pytest_cache/
-.mypy_cache/
+.coverage
+coverage/
 htmlcov/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.cover/
+
+# Build artifacts
+dist/
+build/
+*.out
+*.exe
+*.dll
+*.so
+*.a
+*.obj
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```

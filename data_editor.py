@@ -31,7 +31,7 @@ class DataEditor:
     @staticmethod
     def get_participant_by_id(participant_id: int) -> Optional[Dict]:
         """Получить участника по ID"""
-        participant = Participant.query.get(participant_id)
+        participant = db.session.get(Participant, participant_id)
         return participant.to_dict() if participant else None
     
     @staticmethod
@@ -55,7 +55,7 @@ class DataEditor:
     @staticmethod
     def update_participant(participant_id: int, data: Dict[str, str]) -> Dict[str, Any]:
         """Обновить данные участника"""
-        participant = Participant.query.get(participant_id)
+        participant = db.session.get(Participant, participant_id)
         if not participant:
             return {'success': False, 'error': 'Участник не найден'}
         
@@ -80,7 +80,7 @@ class DataEditor:
     @staticmethod
     def delete_participant(participant_id: int) -> Dict[str, Any]:
         """Удалить участника"""
-        participant = Participant.query.get(participant_id)
+        participant = db.session.get(Participant, participant_id)
         if not participant:
             return {'success': False, 'error': 'Участник не найден'}
         
@@ -105,7 +105,7 @@ class DataEditor:
     @staticmethod
     def get_judge_by_id(judge_id: int) -> Optional[Dict]:
         """Получить судью по ID"""
-        judge = Judge.query.get(judge_id)
+        judge = db.session.get(Judge, judge_id)
         return judge.to_dict() if judge else None
     
     @staticmethod
@@ -127,7 +127,7 @@ class DataEditor:
     @staticmethod
     def update_judge(judge_id: int, data: Dict[str, str]) -> Dict[str, Any]:
         """Обновить данные судьи"""
-        judge = Judge.query.get(judge_id)
+        judge = db.session.get(Judge, judge_id)
         if not judge:
             return {'success': False, 'error': 'Судья не найден'}
         
@@ -141,7 +141,7 @@ class DataEditor:
     @staticmethod
     def delete_judge(judge_id: int) -> Dict[str, Any]:
         """Удалить судью"""
-        judge = Judge.query.get(judge_id)
+        judge = db.session.get(Judge, judge_id)
         if not judge:
             return {'success': False, 'error': 'Судья не найден'}
         
@@ -175,7 +175,7 @@ class DataEditor:
     @staticmethod
     def update_pair(pair_id: int, data: Dict[str, str]) -> Dict[str, Any]:
         """Обновить данные пары"""
-        pair = Pair.query.get(pair_id)
+        pair = db.session.get(Pair, pair_id)
         if not pair:
             return {'success': False, 'error': 'Пара не найдена'}
         
@@ -213,7 +213,7 @@ class DataEditor:
     @staticmethod
     def delete_pair(pair_id: int) -> Dict[str, Any]:
         """Удалить пару"""
-        pair = Pair.query.get(pair_id)
+        pair = db.session.get(Pair, pair_id)
         if not pair:
             return {'success': False, 'error': 'Пара не найдена'}
         
@@ -259,7 +259,7 @@ class DataEditor:
     @staticmethod
     def update_judge_in_discipline(judge_list_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
         """Обновить судью в дисциплине"""
-        judge_list = JudgeList.query.get(judge_list_id)
+        judge_list = db.session.get(JudgeList, judge_list_id)
         if not judge_list:
             return {'success': False, 'error': 'Запись не найдена'}
         
@@ -274,7 +274,7 @@ class DataEditor:
     @staticmethod
     def remove_judge_from_discipline(judge_list_id: int) -> Dict[str, Any]:
         """Удалить судью из дисциплины"""
-        judge_list = JudgeList.query.get(judge_list_id)
+        judge_list = db.session.get(JudgeList, judge_list_id)
         if not judge_list:
             return {'success': False, 'error': 'Запись не найдена'}
         
