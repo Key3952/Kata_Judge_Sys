@@ -1,12 +1,55 @@
+```
 # Python
-__pycache__
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 env/
 venv/
-virtualenv/
+.venv/
+.ENV
+.ENV.local
+
+# SQLite
+*.sqlite
+*.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Web files
+*.min.js
+*.min.css
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Distribution / packaging
+.Python
 build/
 develop-eggs/
 dist/
@@ -18,43 +61,29 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Testing
+.pytest_cache/
+.mypy_cache/
+.tox/
+.nox/
+
+# Environment variables
 .env
-.venv
+.env.local
+*.env.*
 
-# IDE and editors
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-.gigaide/
-
-# Flask-specific
-instance/
-.webassets-cache
-
-# Log files
-*.log
-
-# Database (если появится)
-*.db
-sqlite3.db
-
-# CSV и данные соревнований (ОПЦИОНАЛЬНО — если НЕ хотите хранить в Git)
-# ВАЖНО: если вы используете Git для резервного копирования результатов — не игнорируйте!
-competitions/
-participants.csv
-judges.csv
-
-# Flask app database
-judging_system.db
-
-# Кэш браузера
-/static/css/.sass-cache
-/static/css/*.css.map
-/static/js/*.map
+# Compiled and binary files
+*.so
+*.o
+*.a
+*.obj
+*.out
+*.exe
+*.dll
+*.class
+```
