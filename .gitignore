@@ -1,60 +1,65 @@
-# Python
-__pycache__
+```
+# Environment and temporary files
+.env
+.env.local
+*.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Editors
+.vscode/
+.idea/
+
+# Python specific
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
-env/
-venv/
-virtualenv/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
+*.so
 *.egg-info/
-.installed.cfg
-*.egg
+.eggs/
+.coverage
+coverage/
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.cover/
 
-# Virtual Environment
-.env
-.venv
+# Build artifacts
+dist/
+build/
+*.out
+*.exe
+*.dll
+*.so
+*.a
+*.obj
 
-# IDE and editors
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-.gigaide/
-
-# Flask-specific
-instance/
-.webassets-cache
-
-# Log files
-*.log
-
-# Database (если появится)
-*.db
-sqlite3.db
-
-# CSV и данные соревнований (ОПЦИОНАЛЬНО — если НЕ хотите хранить в Git)
-# ВАЖНО: если вы используете Git для резервного копирования результатов — не игнорируйте!
-competitions/
-participants.csv
-judges.csv
-
-# Flask app database
-judging_system.db
-
-# Кэш браузера
-/static/css/.sass-cache
-/static/css/*.css.map
-/static/js/*.map
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+```
