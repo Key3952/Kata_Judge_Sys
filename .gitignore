@@ -1,12 +1,13 @@
 ```
+# Compiled Python files
+*.pyc
+__pycache__/
+
 # Environment files
 .env
 .env.local
 *.env.*
 
-# Logs
-*.log
-
-# Cookies (likely generated/temporary)
+# Cookies file
 cookies.txt
 ```
