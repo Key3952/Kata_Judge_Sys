@@ -222,6 +222,12 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['SECRET_KEY'] = 'your_secret_key_here_change_in_production'
 app.config['SESSION_COOKIE_SECURE'] = False
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///judging_system.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Инициализация SQLAlchemy
+from models import db
+db.init_app(app)
 
 # Инициализация SocketIO
 socketio = SocketIO(
@@ -333,8 +339,7 @@ def api_get_data(table_name):
             data = CSVManager.read_csv(JUDGES_CSV)
         elif table_name == 'sqlite':
             # Возвращаем список таблиц SQLite
-            from models import db
-            tables = db.engine.table_names()
+            tables = db.metadata.tables.keys()
             data = [{'table': t} for t in tables]
         else:
             return jsonify({'success': False, 'error': 'Unknown table'}), 400

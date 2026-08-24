@@ -1,12 +1,4 @@
 ```
-# Environment files
-.env
-.env.local
-*.env.*
-
-# Logs
-*.log
-
-# Cookies (likely generated/temporary)
-cookies.txt
+__pycache__/
+*.pyc
 ```
