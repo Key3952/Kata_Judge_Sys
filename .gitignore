@@ -1,13 +1,44 @@
 ```
-# Compiled Python files
-*.pyc
-__pycache__/
+# Database files
+instance/*.db
 
-# Environment files
+# Environment variables
 .env
 .env.local
 *.env.*
 
-# Cookies file
-cookies.txt
+# Dependencies
+.venv/
+venv/
+node_modules/
+
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py~
+*.py.class
+*.py.backup
+*.py.swp
+*.py.swo
+*.py.tmp
+*.py.log
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Editors
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
 ```

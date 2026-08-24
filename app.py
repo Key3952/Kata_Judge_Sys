@@ -337,21 +337,41 @@ def api_get_data(table_name):
             data = CSVManager.read_csv(PARTICIPANTS_CSV)
         elif table_name == 'judges':
             data = CSVManager.read_csv(JUDGES_CSV)
-        elif table_name == 'sqlite':
-            # Возвращаем список таблиц SQLite
-            tables = db.metadata.tables.keys()
-            data = [{'table': t} for t in tables]
         else:
-            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+            # Пытаемся загрузить данные из SQLite таблицы
+            if table_name not in db.metadata.tables:
+                return jsonify({'success': False, 'error': f'Table {table_name} not found'}), 404
+            
+            table = db.metadata.tables[table_name]
+            with db.engine.connect() as conn:
+                result = conn.execute(db.select(table))
+                rows = result.fetchall()
+                columns = result.keys()
+                data = [dict(zip(columns, row)) for row in rows]
         
         return jsonify({'success': True, 'data': data})
     except Exception as e:
+        logger.error(f"Error loading data from {table_name}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/data/tables', endpoint='api_data_tables')
+def api_get_tables():
+    """API для получения списка всех таблиц SQLite"""
+    if not session.get('admin'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    
+    try:
+        tables = list(db.metadata.tables.keys())
+        return jsonify({'success': True, 'tables': tables})
+    except Exception as e:
+        logger.error(f"Error getting tables list: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/data/<table_name>/save', methods=['POST'], endpoint='api_data_save')
 def api_save_data(table_name):
-    """API для сохранения данных в CSV файлы"""
+    """API для сохранения данных в CSV файлы или SQLite"""
     if not session.get('admin'):
         return jsonify({'success': False, 'error': 'Unauthorized'}), 403
     
@@ -371,16 +391,23 @@ def api_save_data(table_name):
             rows.append(data)
             CSVManager.write_csv(JUDGES_CSV, rows, CompetitionCSVManager.JUDGES_HEADERS)
         else:
-            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+            # Сохраняем в SQLite таблицу
+            if table_name not in db.metadata.tables:
+                return jsonify({'success': False, 'error': f'Table {table_name} not found'}), 404
+            
+            table = db.metadata.tables[table_name]
+            with db.engine.begin() as conn:
+                conn.execute(db.insert(table).values(**data))
         
         return jsonify({'success': True})
     except Exception as e:
+        logger.error(f"Error saving data to {table_name}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/data/<table_name>/delete', methods=['POST'], endpoint='api_data_delete')
 def api_delete_data(table_name):
-    """API для удаления данных из CSV файлов"""
+    """API для удаления данных из CSV файлов или SQLite"""
     if not session.get('admin'):
         return jsonify({'success': False, 'error': 'Unauthorized'}), 403
     
@@ -399,10 +426,22 @@ def api_delete_data(table_name):
             filtered = [r for r in rows if r.get('ФИО') != data_to_delete.get('ФИО')]
             CSVManager.write_csv(JUDGES_CSV, filtered, CompetitionCSVManager.JUDGES_HEADERS)
         else:
-            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+            # Удаляем из SQLite таблицы
+            if table_name not in db.metadata.tables:
+                return jsonify({'success': False, 'error': f'Table {table_name} not found'}), 404
+            
+            table = db.metadata.tables[table_name]
+            # Строим условие WHERE по первому ключу (обычно id)
+            primary_key = list(data_to_delete.keys())[0]
+            primary_value = data_to_delete[primary_key]
+            
+            with db.engine.begin() as conn:
+                stmt = db.delete(table).where(getattr(table.c, primary_key) == primary_value)
+                conn.execute(stmt)
         
         return jsonify({'success': True})
     except Exception as e:
+        logger.error(f"Error deleting data from {table_name}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

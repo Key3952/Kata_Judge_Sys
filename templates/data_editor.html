@@ -199,16 +199,21 @@
     <!-- Выбор таблицы -->
     <div class="card mb-4">
         <div class="card-body">
-            <div class="d-flex gap-3 flex-wrap">
+            <h5 class="card-title mb-3">Выберите таблицу для редактирования:</h5>
+            <div class="d-flex gap-3 flex-wrap" id="tableButtons">
                 <button onclick="switchTable('participants')" id="btn-participants" class="btn btn-primary">
                     👥 Участники
                 </button>
                 <button onclick="switchTable('judges')" id="btn-judges" class="btn btn-outline-secondary">
                     ⚖️ Судьи
                 </button>
-                <button onclick="switchTable('sqlite')" id="btn-sqlite" class="btn btn-outline-secondary">
-                    🗄️ SQLite База
+                <button onclick="loadAllTables()" id="btn-all-tables" class="btn btn-outline-info">
+                    🗄️ Все таблицы БД
                 </button>
+            </div>
+            <div class="mt-3" id="additionalTables" style="display: none;">
+                <p class="text-muted-theme mb-2"><small>Доступные таблицы базы данных:</small></p>
+                <div class="d-flex gap-2 flex-wrap" id="allTablesList"></div>
             </div>
         </div>
     </div>
@@ -298,9 +303,10 @@ const rowsPerPage = 25;
 
 const tableSchemas = {
     participants: ['ФИО', 'год рождения', 'разряд', 'кю', 'СШ', 'тренер'],
-    judges: ['ФИО'],
-    sqlite: [] // Загружается динамически
+    judges: ['ФИО']
 };
+
+let availableTables = []; // Список всех таблиц БД
 
 // Инициализация
 document.addEventListener('DOMContentLoaded', () => {
@@ -351,15 +357,50 @@ async function loadData() {
     }
 }
 
+// Загрузка списка всех таблиц БД
+async function loadAllTables() {
+    const additionalTablesDiv = document.getElementById('additionalTables');
+    const allTablesList = document.getElementById('allTablesList');
+    
+    try {
+        const response = await fetch('/api/data/tables');
+        const result = await response.json();
+        
+        if (result.success) {
+            availableTables = result.tables || [];
+            
+            // Показываем список таблиц
+            additionalTablesDiv.style.display = 'block';
+            allTablesList.innerHTML = availableTables.map(table => 
+                `<button onclick="switchTable('${table}')" class="btn btn-sm btn-outline-secondary">${table}</button>`
+            ).join('');
+            
+            // Переключаем активную кнопку
+            document.querySelectorAll('#tableButtons .btn').forEach(btn => {
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-outline-secondary');
+            });
+            document.getElementById('btn-all-tables').classList.remove('btn-outline-secondary');
+            document.getElementById('btn-all-tables').classList.add('btn-info');
+        } else {
+            throw new Error(result.error || 'Ошибка получения списка таблиц');
+        }
+    } catch (error) {
+        console.error('Error loading tables:', error);
+        alert('Ошибка загрузки списка таблиц: ' + error.message);
+    }
+}
+
 function renderTable() {
     const thead = document.getElementById('tableHeader');
     const tbody = document.getElementById('tableBody');
     
     // Определяем колонки
     let columns = tableSchemas[currentTable];
-    if (currentTable === 'sqlite' && allData.length > 0) {
+    // Если таблица не в predefined schemas, используем ключи первого объекта
+    if (!columns && allData.length > 0) {
         columns = Object.keys(allData[0]);
-        tableSchemas.sqlite = columns;
+        tableSchemas[currentTable] = columns;
     }
     
     // Рендерим заголовок
