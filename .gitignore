@@ -1,5 +1,11 @@
 ```
-# Environment files
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
 .env
 .env.local
 *.env.*
@@ -7,6 +13,10 @@
 # Logs
 *.log
 
-# Cookies (likely generated/temporary)
+# Temporary files
+*.tmp
+*.swp
+
+# Cookies file
 cookies.txt
 ```
