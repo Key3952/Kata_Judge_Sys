@@ -1,497 +1,583 @@
 {% extends "base.html" %}
 
-{% block title %}Редактор данных{% endblock %}
+{% block title %}Редактор Данных{% endblock %}
+
+{% block extra_css %}
+<style>
+    .editor-container {
+        max-width: 1400px;
+        margin: 0 auto;
+    }
+    
+    .table-editor-wrapper {
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid var(--card-border);
+        background: var(--card-bg);
+        box-shadow: 0 4px 12px var(--shadow-soft);
+    }
+    
+    .table-editor {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    
+    .table-editor thead {
+        background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+        color: white;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+    
+    .table-editor th {
+        padding: 1rem 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 0.75rem;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+        border-right: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    .table-editor td {
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--card-border);
+        vertical-align: middle;
+    }
+    
+    .table-editor tbody tr {
+        transition: background-color 0.2s ease;
+    }
+    
+    .table-editor tbody tr:hover {
+        background: var(--table-row-hover);
+    }
+    
+    .editable-cell {
+        min-width: 120px;
+    }
+    
+    .editable-cell input, .editable-cell select {
+        width: 100%;
+        border: 1px solid transparent;
+        background: transparent;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        color: var(--page-text);
+        transition: all 0.2s ease;
+    }
+    
+    .editable-cell input:hover, .editable-cell select:hover {
+        border-color: var(--card-border);
+        background: var(--card-bg);
+    }
+    
+    .editable-cell input:focus, .editable-cell select:focus {
+        border-color: var(--accent);
+        background: var(--card-bg);
+        outline: none;
+        box-shadow: 0 0 0 2px var(--focus-ring);
+    }
+    
+    .action-buttons {
+        display: flex;
+        gap: 0.5rem;
+        justify-content: center;
+    }
+    
+    .btn-action {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.875rem;
+        border-radius: 6px;
+        transition: all 0.2s ease;
+    }
+    
+    .btn-action:hover {
+        transform: scale(1.05);
+    }
+    
+    .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+    
+    .search-box {
+        position: relative;
+        flex: 1;
+        max-width: 400px;
+    }
+    
+    .search-box input {
+        padding-left: 2.5rem;
+    }
+    
+    .search-box i {
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--muted-text);
+    }
+    
+    .pagination {
+        display: flex;
+        justify-content: center;
+        gap: 0.5rem;
+        margin-top: 1rem;
+    }
+    
+    .pagination button {
+        min-width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .modal-body .form-group {
+        margin-bottom: 1rem;
+    }
+    
+    .modal-body label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+        color: var(--page-text);
+    }
+    
+    .stats-bar {
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        display: flex;
+        gap: 2rem;
+        flex-wrap: wrap;
+    }
+    
+    .stat-item {
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .stat-value {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: var(--primary);
+    }
+    
+    .stat-label {
+        font-size: 0.875rem;
+        color: var(--muted-text);
+    }
+    
+    html[data-theme="dark"] .table-editor thead th {
+        border-right-color: rgba(255,255,255,0.05);
+    }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="container-fluid mt-4">
-    <h2><i class="bi bi-database"></i> Редактор данных</h2>
-    
-    <!-- Вкладки -->
-    <ul class="nav nav-tabs mt-3" id="dataTabs" role="tablist">
-        <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="participants-tab" data-bs-toggle="tab" data-bs-target="#participants" type="button">Участники</button>
-        </li>
-        <li class="nav-item" role="presentation">
-            <button class="nav-link" id="judges-tab" data-bs-toggle="tab" data-bs-target="#judges" type="button">Судьи</button>
-        </li>
-        <li class="nav-item" role="presentation">
-            <button class="nav-link" id="competitions-tab" data-bs-toggle="tab" data-bs-target="#competitions" type="button">Соревнования</button>
-        </li>
-    </ul>
-    
-    <div class="tab-content mt-3" id="dataTabsContent">
-        <!-- Участники -->
-        <div class="tab-pane fade show active" id="participants" role="tabpanel">
-            <div class="row mb-3">
-                <div class="col-md-6">
-                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addParticipantModal">
-                        <i class="bi bi-plus-lg"></i> Добавить участника
-                    </button>
-                </div>
-                <div class="col-md-6">
-                    <input type="text" id="participantSearch" class="form-control" placeholder="Поиск по ФИО или году рождения...">
-                </div>
-            </div>
-            
-            <div class="table-responsive">
-                <table class="table table-striped table-hover" id="participantsTable">
-                    <thead>
-                        <tr>
-                            <th>ФИО</th>
-                            <th>Год рождения</th>
-                            <th>Разряд</th>
-                            <th>Кю</th>
-                            <th>СШ</th>
-                            <th>Тренер</th>
-                            <th>Действия</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            </div>
+<div class="editor-container">
+    <div class="row mb-4 align-items-center">
+        <div class="col-md-8">
+            <h2 class="page-hero-title">📊 Редактор Данных</h2>
+            <p class="text-muted-theme mb-0">Управление участниками и судьями через веб-интерфейс</p>
         </div>
-        
-        <!-- Судьи -->
-        <div class="tab-pane fade" id="judges" role="tabpanel">
-            <div class="row mb-3">
-                <div class="col-md-6">
-                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addJudgeModal">
-                        <i class="bi bi-plus-lg"></i> Добавить судью
-                    </button>
-                </div>
-                <div class="col-md-6">
-                    <input type="text" id="judgeSearch" class="form-control" placeholder="Поиск по ФИО...">
-                </div>
-            </div>
-            
-            <div class="table-responsive">
-                <table class="table table-striped table-hover" id="judgesTable">
-                    <thead>
-                        <tr>
-                            <th>ФИО</th>
-                            <th>Действия</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            </div>
+        <div class="col-md-4 text-end">
+            <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-contrast">← Назад</a>
         </div>
-        
-        <!-- Соревнования -->
-        <div class="tab-pane fade" id="competitions" role="tabpanel">
-            <div class="table-responsive">
-                <table class="table table-striped table-hover" id="competitionsTable">
-                    <thead>
-                        <tr>
-                            <th>Название</th>
-                            <th>Папка</th>
-                            <th>Дата создания</th>
-                            <th>Статус</th>
-                            <th>Действия</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
+    </div>
+
+    <!-- Выбор таблицы -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="d-flex gap-3 flex-wrap">
+                <button onclick="switchTable('participants')" id="btn-participants" class="btn btn-primary">
+                    👥 Участники
+                </button>
+                <button onclick="switchTable('judges')" id="btn-judges" class="btn btn-outline-secondary">
+                    ⚖️ Судьи
+                </button>
+                <button onclick="switchTable('sqlite')" id="btn-sqlite" class="btn btn-outline-secondary">
+                    🗄️ SQLite База
+                </button>
             </div>
         </div>
     </div>
+
+    <!-- Статистика -->
+    <div class="stats-bar" id="statsBar">
+        <div class="stat-item">
+            <span class="stat-value" id="totalRecords">0</span>
+            <span class="stat-label">Всего записей</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-value" id="filteredRecords">0</span>
+            <span class="stat-label">Найдено</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-value" id="lastModified">-</span>
+            <span class="stat-label">Последнее изменение</span>
+        </div>
+    </div>
+
+    <!-- Панель инструментов -->
+    <div class="toolbar">
+        <div class="search-box">
+            <i>🔍</i>
+            <input type="text" id="searchInput" class="form-control" placeholder="Поиск..." onkeyup="handleSearch()">
+        </div>
+        <div class="d-flex gap-2">
+            <button onclick="openAddModal()" class="btn btn-accent">
+                ➕ Добавить запись
+            </button>
+            <button onclick="exportToCSV()" class="btn btn-outline-secondary">
+                📥 Экспорт CSV
+            </button>
+            <button onclick="refreshData()" class="btn btn-outline-info">
+                🔄 Обновить
+            </button>
+        </div>
+    </div>
+
+    <!-- Таблица -->
+    <div class="table-editor-wrapper">
+        <div style="overflow-x: auto; max-height: 600px;">
+            <table class="table-editor" id="dataTable">
+                <thead>
+                    <tr id="tableHeader"></tr>
+                </thead>
+                <tbody id="tableBody">
+                    <tr>
+                        <td colspan="100%" class="text-center py-5 text-muted">
+                            Загрузка данных...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Пагинация -->
+    <div class="pagination" id="pagination"></div>
 </div>
 
-<!-- Модальное окно: Добавить участника -->
-<div class="modal fade" id="addParticipantModal" tabindex="-1">
+<!-- Модальное окно добавления/редактирования -->
+<div class="modal fade" id="recordModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Добавить участника</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        <div class="modal-content" style="background: var(--card-bg);">
+            <div class="modal-header" style="border-bottom-color: var(--card-border);">
+                <h5 class="modal-title" id="modalTitle">Добавить запись</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" style="filter: invert(var(--page-text));"></button>
             </div>
-            <div class="modal-body">
-                <form id="addParticipantForm">
-                    <div class="row mb-3">
-                        <div class="col-md-6">
-                            <label class="form-label">ФИО *</label>
-                            <input type="text" class="form-control" name="ФИО" required>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Год рождения *</label>
-                            <input type="text" class="form-control" name="год рождения" required>
-                        </div>
-                    </div>
-                    <div class="row mb-3">
-                        <div class="col-md-4">
-                            <label class="form-label">Разряд</label>
-                            <input type="text" class="form-control" name="разряд">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Кю</label>
-                            <input type="text" class="form-control" name="кю">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">СШ</label>
-                            <input type="text" class="form-control" name="СШ">
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Тренер</label>
-                        <input type="text" class="form-control" name="тренер">
-                    </div>
-                </form>
+            <div class="modal-body" id="modalBody">
+                <!-- Форма генерируется динамически -->
             </div>
-            <div class="modal-footer">
+            <div class="modal-footer" style="border-top-color: var(--card-border);">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-                <button type="button" class="btn btn-primary" onclick="saveParticipant()">Сохранить</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Модальное окно: Редактировать участника -->
-<div class="modal fade" id="editParticipantModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Редактировать участника</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <form id="editParticipantForm">
-                    <input type="hidden" id="editParticipantId">
-                    <div class="row mb-3">
-                        <div class="col-md-6">
-                            <label class="form-label">ФИО *</label>
-                            <input type="text" class="form-control" id="editFio" required>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Год рождения *</label>
-                            <input type="text" class="form-control" id="editBirthYear" required>
-                        </div>
-                    </div>
-                    <div class="row mb-3">
-                        <div class="col-md-4">
-                            <label class="form-label">Разряд</label>
-                            <input type="text" class="form-control" id="editRank">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Кю</label>
-                            <input type="text" class="form-control" id="editKy">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">СШ</label>
-                            <input type="text" class="form-control" id="editSchool">
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Тренер</label>
-                        <input type="text" class="form-control" id="editCoach">
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-                <button type="button" class="btn btn-primary" onclick="updateParticipant()">Обновить</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Модальное окно: Добавить судью -->
-<div class="modal fade" id="addJudgeModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Добавить судью</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <form id="addJudgeForm">
-                    <div class="mb-3">
-                        <label class="form-label">ФИО *</label>
-                        <input type="text" class="form-control" name="ФИО" required>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-                <button type="button" class="btn btn-primary" onclick="saveJudge()">Сохранить</button>
+                <button type="button" class="btn btn-primary" onclick="saveRecord()">💾 Сохранить</button>
             </div>
         </div>
     </div>
 </div>
 
 <script>
-// Глобальные переменные
-let currentParticipants = [];
-let currentJudges = [];
-let currentCompetitions = [];
+let currentTable = 'participants';
+let allData = [];
+let filteredData = [];
+let currentPage = 1;
+const rowsPerPage = 25;
 
-// Загрузка данных при инициализации
-document.addEventListener('DOMContentLoaded', function() {
-    loadParticipants();
-    loadJudges();
-    loadCompetitions();
-    
-    // Поиск участников
-    document.getElementById('participantSearch').addEventListener('input', function(e) {
-        const search = e.target.value.trim();
-        filterParticipants(search);
-    });
-    
-    // Поиск судей
-    document.getElementById('judgeSearch').addEventListener('input', function(e) {
-        const search = e.target.value.trim();
-        filterJudges(search);
-    });
+const tableSchemas = {
+    participants: ['ФИО', 'год рождения', 'разряд', 'кю', 'СШ', 'тренер'],
+    judges: ['ФИО'],
+    sqlite: [] // Загружается динамически
+};
+
+// Инициализация
+document.addEventListener('DOMContentLoaded', () => {
+    switchTable('participants');
 });
 
-// ==================== УЧАСТНИКИ ====================
-
-function loadParticipants(search = '') {
-    fetch(`/api/data/participants${search ? '?search=' + encodeURIComponent(search) : ''}`)
-        .then(r => r.json())
-        .then(data => {
-            currentParticipants = data;
-            renderParticipantsTable(data);
-        })
-        .catch(err => console.error('Ошибка загрузки участников:', err));
-}
-
-function renderParticipantsTable(participants) {
-    const tbody = document.querySelector('#participantsTable tbody');
-    tbody.innerHTML = '';
+function switchTable(tableName) {
+    currentTable = tableName;
+    currentPage = 1;
     
-    participants.forEach(p => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${escapeHtml(p['ФИО'])}</td>
-            <td>${escapeHtml(p['год рождения'])}</td>
-            <td>${escapeHtml(p['разряд'] || '')}</td>
-            <td>${escapeHtml(p['кю'] || '')}</td>
-            <td>${escapeHtml(p['СШ'] || '')}</td>
-            <td>${escapeHtml(p['тренер'] || '')}</td>
-            <td>
-                <button class="btn btn-sm btn-outline-primary" onclick="editParticipant(${p.id})">
-                    <i class="bi bi-pencil"></i>
-                </button>
-                <button class="btn btn-sm btn-outline-danger" onclick="deleteParticipant(${p.id})">
-                    <i class="bi bi-trash"></i>
-                </button>
-            </td>
-        `;
-        tbody.appendChild(tr);
+    // Обновляем кнопки
+    document.querySelectorAll('.card-body .btn').forEach(btn => {
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-outline-secondary');
     });
-}
-
-function filterParticipants(search) {
-    const filtered = currentParticipants.filter(p => 
-        p['ФИО'].toLowerCase().includes(search.toLowerCase()) ||
-        p['год рождения'].includes(search)
-    );
-    renderParticipantsTable(filtered);
-}
-
-function saveParticipant() {
-    const form = document.getElementById('addParticipantForm');
-    const formData = new FormData(form);
-    const data = Object.fromEntries(formData.entries());
+    const activeBtn = document.getElementById(`btn-${tableName}`);
+    if (activeBtn) {
+        activeBtn.classList.remove('btn-outline-secondary');
+        activeBtn.classList.add('btn-primary');
+    }
     
-    fetch('/api/data/participants', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(data)
-    })
-    .then(r => r.json())
-    .then(result => {
-        if (result.success) {
-            alert('Участник добавлен');
-            bootstrap.Modal.getInstance(document.getElementById('addParticipantModal')).hide();
-            form.reset();
-            loadParticipants();
-        } else {
-            alert('Ошибка: ' + result.error);
-        }
-    })
-    .catch(err => console.error('Ошибка:', err));
+    loadData();
 }
 
-function editParticipant(id) {
-    const p = currentParticipants.find(x => x.id === id);
-    if (!p) return;
+async function loadData() {
+    const tbody = document.getElementById('tableBody');
+    tbody.innerHTML = '<tr><td colspan="100%" class="text-center py-5"><div class="spinner-border text-primary"></div><p class="mt-2">Загрузка...</p></td></tr>';
     
-    document.getElementById('editParticipantId').value = id;
-    document.getElementById('editFio').value = p['ФИО'];
-    document.getElementById('editBirthYear').value = p['год рождения'];
-    document.getElementById('editRank').value = p['разряд'] || '';
-    document.getElementById('editKy').value = p['кю'] || '';
-    document.getElementById('editSchool').value = p['СШ'] || '';
-    document.getElementById('editCoach').value = p['тренер'] || '';
-    
-    new bootstrap.Modal(document.getElementById('editParticipantModal')).show();
-}
-
-function updateParticipant() {
-    const id = parseInt(document.getElementById('editParticipantId').value);
-    const data = {
-        'ФИО': document.getElementById('editFio').value,
-        'год рождения': document.getElementById('editBirthYear').value,
-        'разряд': document.getElementById('editRank').value,
-        'кю': document.getElementById('editKy').value,
-        'СШ': document.getElementById('editSchool').value,
-        'тренер': document.getElementById('editCoach').value
-    };
-    
-    fetch(`/api/data/participants/${id}`, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(data)
-    })
-    .then(r => r.json())
-    .then(result => {
-        if (result.success) {
-            alert('Данные обновлены');
-            bootstrap.Modal.getInstance(document.getElementById('editParticipantModal')).hide();
-            loadParticipants();
-        } else {
-            alert('Ошибка: ' + result.error);
-        }
-    })
-    .catch(err => console.error('Ошибка:', err));
-}
-
-function deleteParticipant(id) {
-    if (!confirm('Вы уверены, что хотите удалить этого участника?')) return;
-    
-    fetch(`/api/data/participants/${id}`, {
-        method: 'DELETE'
-    })
-    .then(r => r.json())
-    .then(result => {
-        if (result.success) {
-            loadParticipants();
-        } else {
-            alert('Ошибка: ' + result.error);
-        }
-    })
-    .catch(err => console.error('Ошибка:', err));
-}
-
-// ==================== СУДЬИ ====================
-
-function loadJudges(search = '') {
-    fetch(`/api/data/judges${search ? '?search=' + encodeURIComponent(search) : ''}`)
-        .then(r => r.json())
-        .then(data => {
-            currentJudges = data;
-            renderJudgesTable(data);
-        })
-        .catch(err => console.error('Ошибка загрузки судей:', err));
-}
-
-function renderJudgesTable(judges) {
-    const tbody = document.querySelector('#judgesTable tbody');
-    tbody.innerHTML = '';
-    
-    judges.forEach(j => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${escapeHtml(j['ФИО'])}</td>
-            <td>
-                <button class="btn btn-sm btn-outline-danger" onclick="deleteJudge(${j.id})">
-                    <i class="bi bi-trash"></i>
-                </button>
-            </td>
-        `;
-        tbody.appendChild(tr);
-    });
-}
-
-function filterJudges(search) {
-    const filtered = currentJudges.filter(j => 
-        j['ФИО'].toLowerCase().includes(search.toLowerCase())
-    );
-    renderJudgesTable(filtered);
-}
-
-function saveJudge() {
-    const form = document.getElementById('addJudgeForm');
-    const formData = new FormData(form);
-    const data = Object.fromEntries(formData.entries());
-    
-    fetch('/api/data/judges', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(data)
-    })
-    .then(r => r.json())
-    .then(result => {
-        if (result.success) {
-            alert('Судья добавлен');
-            bootstrap.Modal.getInstance(document.getElementById('addJudgeModal')).hide();
-            form.reset();
-            loadJudges();
-        } else {
-            alert('Ошибка: ' + result.error);
-        }
-    })
-    .catch(err => console.error('Ошибка:', err));
-}
-
-function deleteJudge(id) {
-    if (!confirm('Вы уверены, что хотите удалить этого судью?')) return;
-    
-    fetch(`/api/data/judges/${id}`, {
-        method: 'DELETE'
-    })
-    .then(r => r.json())
-    .then(result => {
-        if (result.success) {
-            loadJudges();
-        } else {
-            alert('Ошибка: ' + result.error);
-        }
-    })
-    .catch(err => console.error('Ошибка:', err));
-}
-
-// ==================== СОРЕВНОВАНИЯ ====================
-
-function loadCompetitions() {
-    fetch('/api/data/competitions')
-        .then(r => r.json())
-        .then(data => {
-            currentCompetitions = data;
-            renderCompetitionsTable(data);
-        })
-        .catch(err => console.error('Ошибка загрузки соревнований:', err));
-}
-
-function renderCompetitionsTable(competitions) {
-    const tbody = document.querySelector('#competitionsTable tbody');
-    tbody.innerHTML = '';
-    
-    competitions.forEach(c => {
-        const statusBadge = c.status === 'open' 
-            ? '<span class="badge bg-success">Открыто</span>' 
-            : '<span class="badge bg-secondary">Закрыто</span>';
+    try {
+        const response = await fetch(`/api/data/${currentTable}`);
+        const result = await response.json();
         
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${escapeHtml(c.name)}</td>
-            <td><code>${escapeHtml(c.folder_name)}</code></td>
-            <td>${c.created_at ? new Date(c.created_at).toLocaleDateString('ru-RU') : ''}</td>
-            <td>${statusBadge}</td>
-            <td>
-                <a href="/admin/${escapeHtml(c.folder_name)}" class="btn btn-sm btn-outline-primary">
-                    <i class="bi bi-pencil"></i> Редактировать
-                </a>
-            </td>
-        `;
-        tbody.appendChild(tr);
-    });
+        if (result.success) {
+            allData = result.data || [];
+            filteredData = [...allData];
+            
+            // Обновляем статистику
+            document.getElementById('totalRecords').textContent = allData.length;
+            document.getElementById('filteredRecords').textContent = filteredData.length;
+            
+            renderTable();
+        } else {
+            throw new Error(result.error || 'Ошибка загрузки');
+        }
+    } catch (error) {
+        console.error('Load error:', error);
+        tbody.innerHTML = `<tr><td colspan="100%" class="text-center py-5 text-danger">Ошибка: ${error.message}</td></tr>`;
+    }
 }
 
-// Утилита
+function renderTable() {
+    const thead = document.getElementById('tableHeader');
+    const tbody = document.getElementById('tableBody');
+    
+    // Определяем колонки
+    let columns = tableSchemas[currentTable];
+    if (currentTable === 'sqlite' && allData.length > 0) {
+        columns = Object.keys(allData[0]);
+        tableSchemas.sqlite = columns;
+    }
+    
+    // Рендерим заголовок
+    thead.innerHTML = columns.map(col => `<th>${col}</th>`).join('') + 
+                      '<th style="width: 150px;">Действия</th>';
+    
+    // Пагинация
+    const totalPages = Math.ceil(filteredData.length / rowsPerPage);
+    const start = (currentPage - 1) * rowsPerPage;
+    const end = start + rowsPerPage;
+    const pageData = filteredData.slice(start, end);
+    
+    // Рендерим строки
+    if (pageData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="100%" class="text-center py-5 text-muted">Нет данных</td></tr>';
+    } else {
+        tbody.innerHTML = pageData.map((row, index) => {
+            const realIndex = start + index;
+            return `<tr data-index="${realIndex}">
+                ${columns.map(col => `
+                    <td class="editable-cell">
+                        <input type="text" 
+                               value="${escapeHtml(row[col] || '')}" 
+                               onchange="updateCell(${realIndex}, '${col}', this.value)"
+                               placeholder="${col}">
+                    </td>
+                `).join('')}
+                <td>
+                    <div class="action-buttons">
+                        <button onclick="editRecord(${realIndex})" class="btn btn-sm btn-outline-primary" title="Редактировать">✏️</button>
+                        <button onclick="deleteRecord(${realIndex})" class="btn btn-sm btn-outline-danger" title="Удалить">🗑️</button>
+                    </div>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+    
+    // Рендерим пагинацию
+    renderPagination(totalPages);
+    
+    // Обновляем статистику
+    document.getElementById('filteredRecords').textContent = filteredData.length;
+}
+
+function renderPagination(totalPages) {
+    const pagination = document.getElementById('pagination');
+    if (totalPages <= 1) {
+        pagination.innerHTML = '';
+        return;
+    }
+    
+    let html = '';
+    html += `<button onclick="changePage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>←</button>`;
+    
+    for (let i = 1; i <= totalPages; i++) {
+        if (i === 1 || i === totalPages || (i >= currentPage - 2 && i <= currentPage + 2)) {
+            html += `<button onclick="changePage(${i})" class="${i === currentPage ? 'btn-primary' : 'btn-outline-secondary'}">${i}</button>`;
+        } else if (i === currentPage - 3 || i === currentPage + 3) {
+            html += '<span class="px-2">...</span>';
+        }
+    }
+    
+    html += `<button onclick="changePage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>→</button>`;
+    pagination.innerHTML = html;
+}
+
+function changePage(page) {
+    const totalPages = Math.ceil(filteredData.length / rowsPerPage);
+    if (page < 1 || page > totalPages) return;
+    currentPage = page;
+    renderTable();
+}
+
+function handleSearch() {
+    const query = document.getElementById('searchInput').value.toLowerCase().trim();
+    
+    if (!query) {
+        filteredData = [...allData];
+    } else {
+        filteredData = allData.filter(row => {
+            return Object.values(row).some(val => 
+                String(val).toLowerCase().includes(query)
+            );
+        });
+    }
+    
+    currentPage = 1;
+    renderTable();
+}
+
+function updateCell(index, column, value) {
+    allData[index][column] = value;
+    // Автосохранение можно добавить здесь
+}
+
+async function saveRecord() {
+    const modalBody = document.getElementById('modalBody');
+    const formData = {};
+    
+    // Собираем данные из формы
+    modalBody.querySelectorAll('input, select').forEach(input => {
+        formData[input.name] = input.value;
+    });
+    
+    try {
+        const response = await fetch(`/api/data/${currentTable}/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(formData)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            bootstrap.Modal.getInstance(document.getElementById('recordModal')).hide();
+            await loadData();
+            showAlert('success', 'Запись сохранена');
+        } else {
+            throw new Error(result.error || 'Ошибка сохранения');
+        }
+    } catch (error) {
+        showAlert('danger', `Ошибка: ${error.message}`);
+    }
+}
+
+async function deleteRecord(index) {
+    if (!confirm('Вы уверены, что хотите удалить эту запись?')) return;
+    
+    try {
+        const record = allData[index];
+        const response = await fetch(`/api/data/${currentTable}/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(record)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            await loadData();
+            showAlert('success', 'Запись удалена');
+        } else {
+            throw new Error(result.error || 'Ошибка удаления');
+        }
+    } catch (error) {
+        showAlert('danger', `Ошибка: ${error.message}`);
+    }
+}
+
+function openAddModal() {
+    const columns = tableSchemas[currentTable];
+    const modalBody = document.getElementById('modalBody');
+    
+    document.getElementById('modalTitle').textContent = 'Добавить запись';
+    
+    modalBody.innerHTML = columns.map(col => `
+        <div class="form-group">
+            <label>${col}</label>
+            <input type="text" name="${col}" class="form-control" required>
+        </div>
+    `).join('');
+    
+    new bootstrap.Modal(document.getElementById('recordModal')).show();
+}
+
+function editRecord(index) {
+    const row = allData[index];
+    const columns = tableSchemas[currentTable];
+    const modalBody = document.getElementById('modalBody');
+    
+    document.getElementById('modalTitle').textContent = 'Редактировать запись';
+    
+    modalBody.innerHTML = columns.map(col => `
+        <div class="form-group">
+            <label>${col}</label>
+            <input type="text" name="${col}" class="form-control" value="${escapeHtml(row[col] || '')}" required>
+        </div>
+    `).join('');
+    
+    // Сохраняем индекс для обновления
+    modalBody.dataset.editIndex = index;
+    
+    new bootstrap.Modal(document.getElementById('recordModal')).show();
+}
+
+function exportToCSV() {
+    const columns = tableSchemas[currentTable];
+    const csvContent = [
+        columns.join(','),
+        ...filteredData.map(row => 
+            columns.map(col => `"${String(row[col] || '').replace(/"/g, '""')}"`).join(',')
+        )
+    ].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${currentTable}_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+}
+
+function refreshData() {
+    loadData();
+    showAlert('info', 'Данные обновлены');
+}
+
+function showAlert(type, message) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    document.body.appendChild(alertDiv);
+    setTimeout(() => alertDiv.remove(), 3000);
+}
+
 function escapeHtml(text) {
-    if (!text) return '';
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;

@@ -449,6 +449,95 @@ def api_delete_data(table_name):
 
 
 @app.route('/config', methods=['GET', 'POST'])
+def config_competition():
+    """Создание нового соревнования"""
+    if not session.get('admin'):
+        return redirect(url_for('admin_login'))
+    return render_template('data_editor.html')
+
+
+@app.route('/api/data/<table_name>')
+def api_get_data(table_name):
+    """API для получения данных из CSV файлов или SQLite"""
+    if not session.get('admin'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    
+    try:
+        if table_name == 'participants':
+            data = CSVManager.read_csv(PARTICIPANTS_CSV)
+        elif table_name == 'judges':
+            data = CSVManager.read_csv(JUDGES_CSV)
+        elif table_name == 'sqlite':
+            # Возвращаем список таблиц SQLite
+            from models import db
+            tables = db.engine.table_names()
+            data = [{'table': t} for t in tables]
+        else:
+            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+        
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/data/<table_name>/save', methods=['POST'])
+def api_save_data(table_name):
+    """API для сохранения данных в CSV файлы"""
+    if not session.get('admin'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+        
+        if table_name == 'participants':
+            # Добавляем новую запись в participants.csv
+            rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+            rows.append(data)
+            CSVManager.write_csv(PARTICIPANTS_CSV, rows, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+        elif table_name == 'judges':
+            # Добавляем новую запись в judges.csv
+            rows = CSVManager.read_csv(JUDGES_CSV)
+            rows.append(data)
+            CSVManager.write_csv(JUDGES_CSV, rows, CompetitionCSVManager.JUDGES_HEADERS)
+        else:
+            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/data/<table_name>/delete', methods=['POST'])
+def api_delete_data(table_name):
+    """API для удаления данных из CSV файлов"""
+    if not session.get('admin'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    
+    try:
+        data_to_delete = request.json
+        if not data_to_delete:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+        
+        if table_name == 'participants':
+            rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+            # Удаляем по ФИО
+            filtered = [r for r in rows if r.get('ФИО') != data_to_delete.get('ФИО')]
+            CSVManager.write_csv(PARTICIPANTS_CSV, filtered, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+        elif table_name == 'judges':
+            rows = CSVManager.read_csv(JUDGES_CSV)
+            filtered = [r for r in rows if r.get('ФИО') != data_to_delete.get('ФИО')]
+            CSVManager.write_csv(JUDGES_CSV, filtered, CompetitionCSVManager.JUDGES_HEADERS)
+        else:
+            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/config', methods=['GET', 'POST'])
 @require_admin
 def config_competition():
     """Создание нового соревнования"""
