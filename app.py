@@ -1,15 +1,36 @@
 # app.py
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+"""
+Система Судейства Дзюдо Ката - Flask приложение.
+Обновлено с улучшенной безопасностью, валидацией, логированием, кешированием и SQLite БД.
+"""
+
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
+import json
+import re
+import logging
 from datetime import datetime
+from functools import wraps
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения
+load_dotenv()
+
+# Импорты из локальных модулей
+from database import init_db, db
+from data_editor import DataEditor
 from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer
 from scoring import calculate_pair_final_score
-import json
-
-# Импортируем DISCIPLINE_ROWS_BY_KEY из technics.py
 from technics import DISCIPLINE_ROWS_BY_KEY
 from generate_protocols import generate_competition_protocols, protocol_readiness
+from utils import (
+    setup_logging, logger, SecurityUtils, Validator, CacheManager,
+    CSVLockManager, require_admin, require_admin_json, validate_json_request,
+    api_success, api_error, NotFoundError, UnauthorizedError, ForbiddenError,
+    ValidationError, safe_int, safe_float, sanitize_csv_field,
+    format_date_ru, normalize_protocol_token, cached
+)
 
 # Функция для получения красивого названия дисциплины
 def get_discipline_display_name(key):
@@ -218,36 +239,52 @@ def prepare_tablo_results(results: list, pairs: list) -> list:
     return out
 
 
-app = Flask(__name__, static_folder='static', static_url_path='/static')
-app.config['SECRET_KEY'] = 'your_secret_key_here_change_in_production'
-app.config['SESSION_COOKIE_SECURE'] = False
-app.config['SESSION_COOKIE_HTTPONLY'] = True
+# ==================== КОНФИГУРАЦИЯ ПРИЛОЖЕНИЯ ====================
 
-# Инициализация SocketIO
-socketio = SocketIO(
-    app,
-    cors_allowed_origins="*",
-    manage_session=False,
-    async_mode='threading',
-    logger=False,
-    engineio_logger=False,
-    ping_timeout=60,
-    ping_interval=25
-)
+app = Flask(__name__, static_folder='static', static_url_path='/static')
+
+# Конфигурация из .env
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'False').lower() == 'true'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = os.getenv('SESSION_COOKIE_SAMESITE', 'Lax')
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', '16777216'))
+
+# Настройка логирования
+log_level = os.getenv('LOG_LEVEL', 'INFO')
+log_file = os.getenv('LOG_FILE', 'app.log')
+setup_logging(app, log_level=log_level, log_file=log_file)
+
+app.logger.info("Инициализация приложения...")
 
 # Глобальные пути
-GLOBAL_DATA_DIR = os.path.dirname(__file__)
+GLOBAL_DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 PARTICIPANTS_CSV = os.path.join(GLOBAL_DATA_DIR, 'participants.csv')
 JUDGES_CSV = os.path.join(GLOBAL_DATA_DIR, 'judges.csv')
 COMPETITIONS_BASE_DIR = os.path.join(GLOBAL_DATA_DIR, 'competitions')
 
-# Инициализация глобальных CSV файлов
+# Инициализация базы данных SQLite
+init_db(app, db_path=os.path.join(GLOBAL_DATA_DIR, 'judo_kata.db'))
+
+# Инициализация SocketIO
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=os.getenv('SOCKETIO_CORS_ORIGINS', '*'),
+    manage_session=False,
+    async_mode=os.getenv('SOCKETIO_ASYNC_MODE', 'threading'),
+    logger=False,
+    engineio_logger=False,
+    ping_timeout=int(os.getenv('SOCKETIO_PING_TIMEOUT', '60')),
+    ping_interval=int(os.getenv('SOCKETIO_PING_INTERVAL', '25'))
+)
+
+# Инициализация глобальных CSV файлов (для обратной совместимости)
 CSVManager.ensure_csv_exists(PARTICIPANTS_CSV, CompetitionCSVManager.PARTICIPANTS_HEADERS)
 CSVManager.ensure_csv_exists(JUDGES_CSV, CompetitionCSVManager.JUDGES_HEADERS)
 os.makedirs(COMPETITIONS_BASE_DIR, exist_ok=True)
 
-# Простая аутентификация для админки
-ADMIN_PASSWORD = 'admin123'
+# Админ пароль из .env
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')
 
 
 # ==================== СТАТИЧЕСКИЕ ФАЙЛЫ ====================
@@ -255,12 +292,14 @@ ADMIN_PASSWORD = 'admin123'
 @app.route('/competitions/<path:filename>')
 def serve_competition_files(filename):
     """Служить файлы из папки competitions"""
-    filepath = os.path.join(COMPETITIONS_BASE_DIR, filename)
-    # Проверяем, что путь находится внутри COMPETITIONS_BASE_DIR
-    if os.path.abspath(filepath).startswith(os.path.abspath(COMPETITIONS_BASE_DIR)):
-        if os.path.exists(filepath):
-            from flask import send_file
-            return send_file(filepath)
+    # Защита от directory traversal
+    safe_path = SecurityUtils.sanitize_path(filename, COMPETITIONS_BASE_DIR)
+    if not safe_path:
+        app.logger.warning(f"Попытка доступа к недопустимому пути: {filename}")
+        return redirect(url_for('public_dashboard'))
+    
+    if os.path.exists(safe_path):
+        return send_file(safe_path)
     return redirect(url_for('public_dashboard'))
 
 
@@ -278,12 +317,23 @@ def index():
 def admin_login():
     """Вход в административную панель"""
     if request.method == 'POST':
-        password = request.form['password']
+        password = Validator.clean_string(request.form.get('password', ''), max_len=100)
+        
+        # Валидация
+        if not password:
+            flash('Введите пароль', 'danger')
+            return render_template('login.html')
+        
+        # Проверка пароля
         if password == ADMIN_PASSWORD:
             session['admin'] = True
+            session.permanent = True
+            app.logger.info(f"Админ вошел: IP={request.remote_addr}")
             return redirect(url_for('admin_dashboard'))
         else:
+            app.logger.warning(f"Неверная попытка входа: IP={request.remote_addr}")
             flash('Неверный пароль', 'danger')
+    
     return render_template('login.html')
 
 
@@ -295,19 +345,16 @@ def admin_logout():
 
 
 @app.route('/dashboard/admin')
+@require_admin
 def admin_dashboard():
     """Главная панель администратора"""
-    if not session.get('admin'):
-        return redirect(url_for('admin_login'))
-    
-    # Получаем список соревнований
     competitions = []
     if os.path.exists(COMPETITIONS_BASE_DIR):
         for comp_folder in os.listdir(COMPETITIONS_BASE_DIR):
             comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_folder)
             if os.path.isdir(comp_path):
                 competitions.append(comp_folder)
-    
+
     competitions.sort(reverse=True)
     return render_template('admin_dashboard.html', competitions=competitions)
 
@@ -406,16 +453,103 @@ def config_competition():
     """Создание нового соревнования"""
     if not session.get('admin'):
         return redirect(url_for('admin_login'))
+    return render_template('data_editor.html')
+
+
+@app.route('/api/data/<table_name>')
+def api_get_data(table_name):
+    """API для получения данных из CSV файлов или SQLite"""
+    if not session.get('admin'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
     
+    try:
+        if table_name == 'participants':
+            data = CSVManager.read_csv(PARTICIPANTS_CSV)
+        elif table_name == 'judges':
+            data = CSVManager.read_csv(JUDGES_CSV)
+        elif table_name == 'sqlite':
+            # Возвращаем список таблиц SQLite
+            from models import db
+            tables = db.engine.table_names()
+            data = [{'table': t} for t in tables]
+        else:
+            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+        
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/data/<table_name>/save', methods=['POST'])
+def api_save_data(table_name):
+    """API для сохранения данных в CSV файлы"""
+    if not session.get('admin'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+        
+        if table_name == 'participants':
+            # Добавляем новую запись в participants.csv
+            rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+            rows.append(data)
+            CSVManager.write_csv(PARTICIPANTS_CSV, rows, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+        elif table_name == 'judges':
+            # Добавляем новую запись в judges.csv
+            rows = CSVManager.read_csv(JUDGES_CSV)
+            rows.append(data)
+            CSVManager.write_csv(JUDGES_CSV, rows, CompetitionCSVManager.JUDGES_HEADERS)
+        else:
+            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/data/<table_name>/delete', methods=['POST'])
+def api_delete_data(table_name):
+    """API для удаления данных из CSV файлов"""
+    if not session.get('admin'):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+    
+    try:
+        data_to_delete = request.json
+        if not data_to_delete:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+        
+        if table_name == 'participants':
+            rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+            # Удаляем по ФИО
+            filtered = [r for r in rows if r.get('ФИО') != data_to_delete.get('ФИО')]
+            CSVManager.write_csv(PARTICIPANTS_CSV, filtered, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+        elif table_name == 'judges':
+            rows = CSVManager.read_csv(JUDGES_CSV)
+            filtered = [r for r in rows if r.get('ФИО') != data_to_delete.get('ФИО')]
+            CSVManager.write_csv(JUDGES_CSV, filtered, CompetitionCSVManager.JUDGES_HEADERS)
+        else:
+            return jsonify({'success': False, 'error': 'Unknown table'}), 400
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/config', methods=['GET', 'POST'])
+@require_admin
+def config_competition():
+    """Создание нового соревнования"""
     if request.method == 'POST':
-        comp_name = request.form.get('comp_name', '').strip()
-        comp_path = request.form.get('comp_path', COMPETITIONS_BASE_DIR).strip()
+        comp_name = Validator.clean_string(request.form.get('comp_name', ''), max_len=100)
+        comp_path = Validator.clean_string(request.form.get('comp_path', COMPETITIONS_BASE_DIR), max_len=500)
         
         if not comp_name:
             flash('Укажите название соревнования', 'danger')
             return render_template('config.html', default_path=COMPETITIONS_BASE_DIR)
         
-        # Нормализуем путь для Windows и Linux
+        # Нормализуем путь
         comp_path = comp_path.replace('\\', os.sep).replace('/', os.sep)
 
         # Проверяем доступ к директории
@@ -424,13 +558,14 @@ def config_competition():
         
         # Создаем папку соревнования
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        comp_folder_name = f"{comp_name}_{timestamp}"
+        # Санитизируем имя папки
+        safe_comp_name = re.sub(r'[^\w\-_]', '_', comp_name)[:50]
+        comp_folder_name = f"{safe_comp_name}_{timestamp}"
         comp_full_path = os.path.join(comp_path, comp_folder_name)
         
         try:
             os.makedirs(comp_full_path, exist_ok=True)
             
-            # Создаем файл config.json с информацией
             config = {
                 'name': comp_name,
                 'created': datetime.now().isoformat(),
@@ -441,9 +576,11 @@ def config_competition():
             with open(os.path.join(comp_full_path, 'config.json'), 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
             
+            app.logger.info(f"Создано соревнование: {comp_name}")
             flash(f'Соревнование "{comp_name}" создано', 'success')
             return redirect(url_for('edit_competition', comp_name=comp_folder_name))
         except Exception as e:
+            app.logger.error(f"Ошибка создания соревнования: {e}")
             flash(f'Ошибка при создании соревнования: {str(e)}', 'danger')
     
     return render_template('config.html', default_path=COMPETITIONS_BASE_DIR)
@@ -1538,6 +1675,101 @@ def handle_leave_tablo(data):
             print(f'👋 Client {request.sid} left room: {room}')
     except Exception as e:
         print(f'Error in leave_tablo handler: {e}')
+
+
+# ==================== API ДЛЯ РЕДАКТОРА ДАННЫХ ====================
+
+@app.route('/data-editor')
+@require_admin
+def data_editor():
+    """Страница редактора данных"""
+    return render_template('data_editor.html')
+
+
+@app.route('/api/data/participants', methods=['GET'])
+@require_admin_json
+def api_get_participants():
+    """Получить список участников с поиском"""
+    search = request.args.get('search', '')
+    limit = min(int(request.args.get('limit', 100)), 500)
+    participants = DataEditor.get_all_participants(search=search or None, limit=limit)
+    return jsonify(participants)
+
+
+@app.route('/api/data/participants', methods=['POST'])
+@require_admin_json
+def api_create_participant():
+    """Создать участника"""
+    data = request.get_json(silent=True) or {}
+    result = DataEditor.create_participant(data)
+    status = 200 if result.get('success') else 400
+    return jsonify(result), status
+
+
+@app.route('/api/data/participants/<int:participant_id>', methods=['GET'])
+@require_admin_json
+def api_get_participant(participant_id):
+    """Получить участника по ID"""
+    participant = DataEditor.get_participant_by_id(participant_id)
+    if participant:
+        return jsonify(participant)
+    return jsonify({'error': 'Участник не найден'}), 404
+
+
+@app.route('/api/data/participants/<int:participant_id>', methods=['PUT'])
+@require_admin_json
+def api_update_participant(participant_id):
+    """Обновить участника"""
+    data = request.get_json(silent=True) or {}
+    result = DataEditor.update_participant(participant_id, data)
+    status = 200 if result.get('success') else 400
+    return jsonify(result), status
+
+
+@app.route('/api/data/participants/<int:participant_id>', methods=['DELETE'])
+@require_admin_json
+def api_delete_participant(participant_id):
+    """Удалить участника"""
+    result = DataEditor.delete_participant(participant_id)
+    status = 200 if result.get('success') else 404
+    return jsonify(result), status
+
+
+@app.route('/api/data/judges', methods=['GET'])
+@require_admin_json
+def api_get_judges():
+    """Получить список судей с поиском"""
+    search = request.args.get('search', '')
+    limit = min(int(request.args.get('limit', 100)), 500)
+    judges = DataEditor.get_all_judges(search=search or None, limit=limit)
+    return jsonify(judges)
+
+
+@app.route('/api/data/judges', methods=['POST'])
+@require_admin_json
+def api_create_judge():
+    """Создать судью"""
+    data = request.get_json(silent=True) or {}
+    result = DataEditor.create_judge(data)
+    status = 200 if result.get('success') else 400
+    return jsonify(result), status
+
+
+@app.route('/api/data/judges/<int:judge_id>', methods=['DELETE'])
+@require_admin_json
+def api_delete_judge(judge_id):
+    """Удалить судью"""
+    result = DataEditor.delete_judge(judge_id)
+    status = 200 if result.get('success') else 404
+    return jsonify(result), status
+
+
+@app.route('/api/data/competitions', methods=['GET'])
+@require_admin_json
+def api_get_competitions():
+    """Получить список соревнований"""
+    competitions = DataEditor.get_all_competitions()
+    return jsonify(competitions)
 
 
 if __name__ == '__main__':
