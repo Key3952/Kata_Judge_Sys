@@ -1,37 +1,64 @@
 ```
-# Python
+# Environment and temporary files
+.env
+.env.local
+*.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Editors
+.vscode/
+.idea/
+
+# Python specific
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
-env/
-venv/
-.venv/
-.ENV
-.python-version
-.pytest_cache/
-.mypy_cache/
+*.so
+*.egg-info/
+.eggs/
 .coverage
 coverage/
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.cover/
 
-# SQLite
-*.sqlite
-*.db
+# Build artifacts
+dist/
+build/
+*.out
+*.exe
+*.dll
+*.so
+*.a
+*.obj
 
-# Web/HTML templates related
-*.tmp
-
-# Logs
-*.log
-*.tmp
-
-# Environment variables
-.env
-.env.local
-*.env*
-
-# OS generated files
-.DS_Store
-Thumbs.db
-```
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
