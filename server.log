@@ -1,0 +1,24 @@
+OpenBLAS WARNING - could not determine the L2 cache size on this system, assuming 256k
+2026-08-24 12:58:37,683 - judo_kata - INFO - [app.py:247] - Таблицы базы данных созданы/проверены
+ * Serving Flask app 'app'
+ * Debug mode: off
+2026-08-24 12:58:37,824 - werkzeug - INFO - [_internal.py:97] - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://21.0.10.179:5000
+2026-08-24 12:58:37,824 - werkzeug - INFO - [_internal.py:97] - [33mPress CTRL+C to quit[0m
+2026-08-24 12:58:39,763 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:58:39] "[31m[1mGET /api/data/participant HTTP/1.1[0m" 403 -
+2026-08-24 12:58:42,563 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:58:42] "[31m[1mGET /api/data/participant HTTP/1.1[0m" 403 -
+2026-08-24 12:58:44,722 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:58:44] "[31m[1mGET /api/data/tables HTTP/1.1[0m" 403 -
+2026-08-24 12:58:47,164 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:58:47] "[33mPOST /login HTTP/1.1[0m" 404 -
+2026-08-24 12:58:59,047 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:58:59] "GET /admin/login HTTP/1.1" 200 -
+2026-08-24 12:59:01,783 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:01] "[32mPOST /admin/login HTTP/1.1[0m" 302 -
+2026-08-24 12:59:01,784 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:01] "[31m[1mPOST /dashboard/admin HTTP/1.1[0m" 405 -
+2026-08-24 12:59:05,740 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:05] "[32mPOST /admin/login HTTP/1.1[0m" 302 -
+2026-08-24 12:59:05,781 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:05] "GET /api/data/tables HTTP/1.1" 200 -
+2026-08-24 12:59:08,044 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:08] "GET /api/data/participant HTTP/1.1" 200 -
+2026-08-24 12:59:11,003 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:11] "GET /api/data/judge HTTP/1.1" 200 -
+2026-08-24 12:59:14,042 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:14] "POST /api/data/participant/save HTTP/1.1" 200 -
+2026-08-24 12:59:16,339 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:16] "GET /api/data/participant HTTP/1.1" 200 -
+2026-08-24 12:59:19,081 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:19] "POST /api/data/participant/delete HTTP/1.1" 200 -
+2026-08-24 12:59:21,683 - werkzeug - INFO - [_internal.py:97] - 127.0.0.1 - - [24/Aug/2026 12:59:21] "GET /api/data/participant HTTP/1.1" 200 -
