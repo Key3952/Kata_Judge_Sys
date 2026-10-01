@@ -1602,4 +1602,15 @@ def handle_leave_tablo(data):
 
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    # Локальный запуск для разработки/судейства в локальной сети.
+    # allow_unsafe_werkzeug=True отключает проверку "production server",
+    # т.к. система сознательно работает как локальное приложение без внешнего доступа.
+    # Для продакшена запускайте через gunicorn/eventlet:
+    #   gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 app:app
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=5000,
+        debug=False,
+        allow_unsafe_werkzeug=True,
+    )
