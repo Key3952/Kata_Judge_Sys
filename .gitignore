@@ -1,44 +1,43 @@
 ```
-# Database files
-instance/*.db
-
 # Environment variables
-.env
-.env.local
-*.env.*
+.env*
+*.env*
 
-# Dependencies
-.venv/
-venv/
-node_modules/
-
-# Python specific
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.py~
-*.py.class
-*.py.backup
-*.py.swp
-*.py.swo
-*.py.tmp
-*.py.log
-*.log
+# Temporary files
 *.tmp
 *.swp
 *.swo
 
-# Build artifacts
-dist/
-build/
-*.egg-info/
+# Logs
+*.log
 
-# Editors
-.vscode/
-.idea/
-
-# OS generated files
-.DS_Store
-Thumbs.db
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+*.pot
+*.pyc
+*.pyo
+*.pyd
+.MF
+.TemporaryItems
+.Trashes
+Icon?
+VolumeIcon.icns
 ```

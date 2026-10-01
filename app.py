@@ -2,6 +2,7 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
+import logging
 from datetime import datetime
 from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer
 from scoring import calculate_pair_final_score
@@ -225,9 +226,25 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///judging_system.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger('judo_kata')
+
 # Инициализация SQLAlchemy
 from models import db
 db.init_app(app)
+
+# Создание таблиц БД при первом запуске
+with app.app_context():
+    db.create_all()
+    logger.info("Таблицы базы данных созданы/проверены")
 
 # Инициализация SocketIO
 socketio = SocketIO(
