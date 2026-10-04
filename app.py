@@ -240,11 +240,53 @@ logger = logging.getLogger('judo_kata')
 
 # Инициализация SQLAlchemy
 from models import db
+from db_service import db_service
 db.init_app(app)
 
-# Создание таблиц БД при первом запуске
+# Глобальные пути
+GLOBAL_DATA_DIR = os.path.dirname(__file__) or '.'
+PARTICIPANTS_CSV = os.path.join(GLOBAL_DATA_DIR, 'participants.csv')
+JUDGES_CSV = os.path.join(GLOBAL_DATA_DIR, 'judges.csv')
+COMPETITIONS_BASE_DIR = os.path.join(GLOBAL_DATA_DIR, 'competitions')
+
+
+def _migrate_db_schema() -> None:
+    """Удаляет устаревшие таблицы (пара с FK на участников, Score) и
+    пересоздаёт схему по актуальным моделям.
+
+    Старые таблицы были пусты (данные никогда не писались), поэтому
+    миграция безопасна.
+    """
+    from sqlalchemy import inspect, text
+    inspector = inspect(db.engine)
+    existing = set(inspector.get_table_names())
+    obsolete = {'pair', 'score'} & existing
+    if obsolete:
+        with db.engine.begin() as conn:
+            conn.execute(text('PRAGMA foreign_keys=OFF'))
+            for t in obsolete:
+                conn.execute(text(f'DROP TABLE IF EXISTS {t}'))
+            conn.execute(text('PRAGMA foreign_keys=ON'))
+        logger.info("Удалены устаревшие таблицы БД: %s", ', '.join(sorted(obsolete)))
+
+
+def _seed_db_from_csv() -> None:
+    """Синхронизирует SQLite-реестр участников/судей с глобальными CSV."""
+    try:
+        rows = CSVManager.read_csv(PARTICIPANTS_CSV) if os.path.exists(PARTICIPANTS_CSV) else []
+        n_p = db_service.sync_participants_from_csv(rows)
+        jrows = CSVManager.read_csv(JUDGES_CSV) if os.path.exists(JUDGES_CSV) else []
+        n_j = db_service.sync_judges_from_csv(jrows)
+        logger.info("Реестр БД синхронизирован с CSV: участников=%s, судей=%s", n_p, n_j)
+    except OSError as exc:
+        logger.warning("Не удалось синхронизировать БД с CSV: %s", exc)
+
+
+# Создание/миграция таблиц БД и первичная синхронизация с CSV
 with app.app_context():
+    _migrate_db_schema()
     db.create_all()
+    _seed_db_from_csv()
     logger.info("Таблицы базы данных созданы/проверены")
 
 # Инициализация SocketIO
@@ -258,12 +300,6 @@ socketio = SocketIO(
     ping_timeout=60,
     ping_interval=25
 )
-
-# Глобальные пути
-GLOBAL_DATA_DIR = os.path.dirname(__file__)
-PARTICIPANTS_CSV = os.path.join(GLOBAL_DATA_DIR, 'participants.csv')
-JUDGES_CSV = os.path.join(GLOBAL_DATA_DIR, 'judges.csv')
-COMPETITIONS_BASE_DIR = os.path.join(GLOBAL_DATA_DIR, 'competitions')
 
 # Инициализация глобальных CSV файлов
 CSVManager.ensure_csv_exists(PARTICIPANTS_CSV, CompetitionCSVManager.PARTICIPANTS_HEADERS)
@@ -504,6 +540,7 @@ def config_competition():
                 json.dump(config, f, ensure_ascii=False, indent=2)
             
             flash(f'Соревнование "{comp_name}" создано', 'success')
+            db_service.register_competition(comp_folder_name, comp_name)
             return redirect(url_for('edit_competition', comp_name=comp_folder_name))
         except Exception as e:
             flash(f'Ошибка при создании соревнования: {str(e)}', 'danger')
@@ -611,7 +648,9 @@ def add_discipline(comp_name):
     # Создаем структуру для дисциплины
     CompetitionCSVManager.create_discipline_structure(comp_path, discipline_key)
     ensure_stage_config(comp_path, discipline_key)
-    
+    db_service.register_discipline(comp_name, discipline_key,
+                                   get_discipline_display_name(discipline_key))
+
     return jsonify({'success': True, 'message': 'Дисциплина добавлена'})
 
 
@@ -743,7 +782,8 @@ def remove_discipline(comp_name):
     if os.path.isdir(disc_path):
         import shutil
         shutil.rmtree(disc_path)
-    
+    db_service.remove_discipline(comp_name, discipline_key)
+
     return jsonify({'success': True, 'message': 'Дисциплина удалена'})
 
 
@@ -768,7 +808,8 @@ def close_competition(comp_name):
     
     with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
-    
+
+    db_service.set_competition_status(comp_name, 'closed')
     return jsonify({'success': True, 'message': 'Соревнование закрыто'})
 
 
@@ -793,7 +834,8 @@ def open_competition(comp_name):
     
     with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
-    
+
+    db_service.set_competition_status(comp_name, 'open')
     return jsonify({'success': True, 'message': 'Соревнование открыто'})
 
 
@@ -810,6 +852,7 @@ def delete_competition(comp_name):
     try:
         import shutil
         shutil.rmtree(comp_path)
+        db_service.remove_competition(comp_name)
         return jsonify({'success': True, 'message': 'Соревнование удалено'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -822,6 +865,7 @@ def clear_participants():
         return jsonify({'error': 'Unauthorized'}), 403
     
     CSVManager.write_csv(PARTICIPANTS_CSV, [], CompetitionCSVManager.PARTICIPANTS_HEADERS)
+    db_service.sync_participants_from_csv([])
     return jsonify({'success': True, 'message': 'CSV участников очищен'})
 
 
@@ -832,6 +876,7 @@ def clear_judges():
         return jsonify({'error': 'Unauthorized'}), 403
     
     CSVManager.write_csv(JUDGES_CSV, [], CompetitionCSVManager.JUDGES_HEADERS)
+    db_service.sync_judges_from_csv([])
     return jsonify({'success': True, 'message': 'CSV судей очищен'})
 
 
@@ -964,6 +1009,10 @@ def register_participants(comp_name, kata_key):
                     pairs_data,
                     CompetitionCSVManager.PAIRS_HEADERS,
                 )
+            db_service.save_pairs(comp_name, kata_key, 'prelim', pairs_data)
+            db_service.save_pairs(comp_name, kata_key, 'final', pairs_data)
+        else:
+            db_service.save_pairs(comp_name, kata_key, 'prelim', pairs_data)
         
         if judges_data:
             judges_file = os.path.join(disc_path, 'judges_list.csv')
@@ -1269,7 +1318,7 @@ def save_judge_action(comp_name, kata_key):
     headers = ['техника', 'details_json']
     CSVManager.write_csv(protocol_path, technique_data, headers)
 
-    if isFinal:
+    if is_final:
         judges_file = os.path.join(comp_path, kata_key, 'judges_list.csv')
         judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
         meta = judge_positions_meta(judges)
@@ -1312,6 +1361,10 @@ def save_judge_action(comp_name, kata_key):
         # Записываем обновленный финальный протокол
         CSVManager.write_csv(final_protocol_path, all_results, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
     
+    # Архивируем протокол судьи в БД (не блокирует основной поток CSV)
+    db_service.save_judge_score(comp_name, kata_key, stage, judge, pos_int,
+                                int(pair), scores, details, total)
+
     return jsonify({'success': True})
 
 
