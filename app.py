@@ -58,7 +58,7 @@ def ensure_stage_config(comp_path: str, kata_key: str) -> dict:
             with open(cfg_path, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
             cfg.update(loaded or {})
-        except Exception:
+        except (OSError, ValueError):
             pass
     # Ensure stage files exist:
     # prelim -> root discipline files; final -> subfolder final/
@@ -74,10 +74,10 @@ def ensure_stage_config(comp_path: str, kata_key: str) -> dict:
     # <=3 пар -> только прямой финал
     try:
         root_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
-        if len(root_pairs) <= 3 and len(root_pairs) > 0:
+        if 0 < len(root_pairs) <= 3:
             cfg['mode'] = 'final_only'
             cfg['current_stage'] = 'final'
-    except Exception:
+    except OSError:
         pass
     with open(cfg_path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -109,7 +109,7 @@ def judge_positions_meta(judges: list) -> dict:
             p = int(str(j.get('место', '')).strip())
             if p > 0:
                 positions.append(p)
-        except Exception:
+        except ValueError:
             continue
     unique_positions = sorted(set(positions))
     n = len(unique_positions)
@@ -528,8 +528,7 @@ def edit_competition(comp_name):
     if os.path.exists(config_file):
         with open(config_file, 'r', encoding='utf-8') as f:
             config = json.load(f)
-    comp_display_name = config.get('name', comp_name)
-    
+
     # Получаем список дисциплин
     disciplines = []
     for folder in os.listdir(comp_path):
@@ -632,7 +631,7 @@ def discipline_stage_action(comp_name, kata_key):
     cfg['final_top_n'] = top_n
 
     root_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
-    if len(root_pairs) <= 3 and len(root_pairs) > 0:
+    if 0 < len(root_pairs) <= 3:
         cfg['mode'] = 'final_only'
         cfg['current_stage'] = 'final'
         cfg['status'] = 'open'
@@ -1220,7 +1219,7 @@ def save_judge_action(comp_name, kata_key):
     pair = data.get('pair')
     details = data.get('details', [])
     total = data.get('total')
-    isFinal = data.get('isFinal', False)
+    is_final = data.get('isFinal', False)
 
     if not judge or not pos or not pair:
         return jsonify({'error': 'Missing data'}), 400
