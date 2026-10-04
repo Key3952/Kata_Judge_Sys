@@ -16,9 +16,38 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional
 
-from models import db, Participant, Judge, Competition, Discipline, PairReg, JudgeScore
+from models import (
+    db, Participant, Judge, Competition, Discipline, PairReg, JudgeScore,
+    JudgeListEntry, configure_sqlite_pragmas,
+)
 
 logger = logging.getLogger('judo_kata.db')
+
+_UNSET = object()  # маркер «параметр не передан» для update_competition_meta
+
+
+def _participant_detail(row: Dict[str, Any], prefix: str = '') -> Dict[str, str]:
+    """Извлекает детали участника из строки пары ('Тори_разряд' и т.п.)."""
+    return {
+        'ФИО': str(row.get(f'{prefix}ФИО', '') or '').strip(),
+        'год рождения': str(row.get(f'{prefix}год рождения', '') or '').strip(),
+        'разряд': str(row.get(f'{prefix}разряд', '') or '').strip(),
+        'кю': str(row.get(f'{prefix}кю', '') or '').strip(),
+        'СШ': str(row.get(f'{prefix}СШ', '') or '').strip(),
+        'тренер': str(row.get(f'{prefix}тренер', '') or '').strip(),
+    }
+
+
+def _detail_to_row(detail: Dict[str, Any], prefix: str) -> Dict[str, str]:
+    """Обратно: dict участника -> колонки строки пары."""
+    return {
+        f'{prefix}ФИО': str(detail.get('ФИО', '') or ''),
+        f'{prefix}год рождения': str(detail.get('год рождения', '') or ''),
+        f'{prefix}разряд': str(detail.get('разряд', '') or ''),
+        f'{prefix}кю': str(detail.get('кю', '') or ''),
+        f'{prefix}СШ': str(detail.get('СШ', '') or ''),
+        f'{prefix}тренер': str(detail.get('тренер', '') or ''),
+    }
 
 # Нормализованные заголовки CSV-участника -> поля модели Participant
 PARTICIPANT_FIELD_MAP: Dict[str, str] = {
@@ -149,7 +178,7 @@ class DBService:
 
     # ---------- Глобальный реестр судей ----------
 
-    def add_judge(self, name: str) -> None:
+    def add_judge(self, name: str, category: str = '') -> None:
         name = str(name or '').strip()
         if not name:
             return
@@ -159,7 +188,10 @@ class DBService:
                     db.func.lower(Judge.name) == name.lower()
                 ).first()
                 if exists is None:
-                    db.session.add(Judge(name=name))
+                    db.session.add(Judge(name=name, category=str(category or '').strip()))
+                    db.session.commit()
+                elif str(category or '').strip():
+                    exists.category = str(category).strip()
                     db.session.commit()
         except Exception as exc:  # noqa: BLE001
             db.session.rollback()
@@ -168,16 +200,22 @@ class DBService:
     def sync_judges_from_csv(self, rows: List[Dict[str, Any]]) -> int:
         try:
             with self._lock:
-                names = {
-                    str(r.get('ФИО', '') or '').strip()
-                    for r in rows if str(r.get('ФИО', '') or '').strip()
-                }
+                wanted = {}
+                for r in rows:
+                    n = str(r.get('ФИО', '') or '').strip()
+                    if n:
+                        wanted[n.lower()] = (
+                            n, str(r.get('категория', '') or '').strip(),
+                        )
                 existing = {j.name.strip().lower(): j for j in Judge.query.all()}
-                for n in names:
-                    if n.lower() not in existing:
-                        db.session.add(Judge(name=n))
+                for lname, (n, cat) in wanted.items():
+                    j = existing.get(lname)
+                    if j is None:
+                        db.session.add(Judge(name=n, category=cat))
+                    elif cat:
+                        j.category = cat
                 for lname, j in existing.items():
-                    if j.name.strip() not in names:
+                    if lname not in wanted:
                         db.session.delete(j)
                 db.session.commit()
                 return Judge.query.count()
@@ -214,6 +252,49 @@ class DBService:
         except Exception as exc:  # noqa: BLE001
             db.session.rollback()
             logger.warning("DB register_competition failed: %s", exc)
+
+    def update_competition_meta(self, folder_name: str, *,
+                                name: Optional[str] = None,
+                                subtitle: Optional[str] = None,
+                                event_date: Any = _UNSET,
+                                status: Optional[str] = None) -> bool:
+        """Горячее обновление названия/субтайтла/даты соревнования."""
+        try:
+            with self._lock:
+                comp = Competition.query.filter_by(folder_name=folder_name).first()
+                if comp is None:
+                    return False
+                if name is not None:
+                    comp.name = name
+                    comp.display_name = name
+                if subtitle is not None:
+                    comp.subtitle = subtitle
+                if event_date is not _UNSET:
+                    comp.event_date = event_date
+                if status is not None:
+                    comp.status = status
+                db.session.commit()
+                return True
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            logger.warning("DB update_competition_meta failed: %s", exc)
+            return False
+
+    def get_competition_meta(self, folder_name: str) -> Dict[str, Any]:
+        try:
+            with self._lock:
+                comp = Competition.query.filter_by(folder_name=folder_name).first()
+                if comp is None:
+                    return {}
+                return {
+                    'name': comp.name or '',
+                    'subtitle': comp.subtitle or '',
+                    'event_date': comp.event_date.isoformat() if comp.event_date else '',
+                    'status': comp.status or 'open',
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DB get_competition_meta failed: %s", exc)
+            return {}
 
     def set_competition_status(self, folder_name: str, status: str) -> None:
         try:
@@ -295,26 +376,159 @@ class DBService:
 
     def save_pairs(self, comp_folder: str, kata_key: str, stage: str,
                    pairs: List[Dict[str, Any]]) -> None:
-        """Архивирует список пар дисциплины/этапа (полная перезапись)."""
+        """Сохраняет пары дисциплины/этапа с привязкой к реестру участников.
+
+        Diff-обновление по pair_number (без полного DELETE+INSERT):
+        tori_id/uke_id — ссылки на Participant; *_snapshot — снимок данных
+        на момент регистрации (используется для завершённых соревнований).
+        """
         try:
             with self._lock:
                 disc = self._get_discipline(comp_folder, kata_key)
                 if disc is None:
                     return
-                PairReg.query.filter_by(discipline_id=disc.id, stage=stage).delete()
+                existing = {p.pair_number: p for p in PairReg.query.filter_by(
+                    discipline_id=disc.id, stage=stage).all()}
+                wanted_nums = set()
                 for row in pairs:
-                    db.session.add(PairReg(
-                        discipline_id=disc.id,
-                        stage=stage,
-                        pair_number=self._to_int(row.get('номер пары')) or 0,
-                        tori_name=str(row.get('Тори_ФИО', '') or ''),
-                        uke_name=str(row.get('Уке_ФИО', '') or ''),
-                        data_json=dict(row),
-                    ))
+                    pn = self._to_int(row.get('номер пары')) or 0
+                    wanted_nums.add(pn)
+                    tori_det = _participant_detail(row, 'Тори_')
+                    uke_det = _participant_detail(row, 'Уке_')
+                    rec = existing.get(pn)
+                    if rec is None:
+                        rec = PairReg(discipline_id=disc.id, stage=stage,
+                                      pair_number=pn)
+                        db.session.add(rec)
+                    rec.tori_name = tori_det['ФИО']
+                    rec.uke_name = uke_det['ФИО']
+                    rec.tori_snapshot = tori_det
+                    rec.uke_snapshot = uke_det
+                    rec.data_json = dict(row)
+                    tp = self._find_participant(tori_det['ФИО'],
+                                                self._to_int(tori_det['год рождения'])) \
+                        if tori_det['ФИО'] else None
+                    up = self._find_participant(uke_det['ФИО'],
+                                                self._to_int(uke_det['год рождения'])) \
+                        if uke_det['ФИО'] else None
+                    rec.tori_id = tp.id if tp else None
+                    rec.uke_id = up.id if up else None
+                for pn, rec in existing.items():
+                    if pn not in wanted_nums:
+                        db.session.delete(rec)
                 db.session.commit()
         except Exception as exc:  # noqa: BLE001
             db.session.rollback()
             logger.warning("DB save_pairs failed: %s", exc)
+
+    def save_judge_list(self, comp_folder: str, kata_key: str,
+                        judges: List[Dict[str, Any]]) -> None:
+        """Сохраняет состав судей дисциплины с привязкой к реестру судей."""
+        try:
+            with self._lock:
+                disc = self._get_discipline(comp_folder, kata_key)
+                if disc is None:
+                    return
+                existing = {e.position: e for e in JudgeListEntry.query.filter_by(
+                    discipline_id=disc.id).all()}
+                wanted_pos = set()
+                for row in judges:
+                    pos = self._to_int(row.get('место')) or 0
+                    if pos <= 0:
+                        continue
+                    wanted_pos.add(pos)
+                    name = str(row.get('ФИО', '') or '').strip()
+                    if not name:
+                        continue
+                    rec = existing.get(pos)
+                    if rec is None:
+                        rec = JudgeListEntry(discipline_id=disc.id, position=pos)
+                        db.session.add(rec)
+                    rec.judge_name = name
+                    j = Judge.query.filter(
+                        db.func.lower(Judge.name) == name.lower()).first()
+                    if j is None:
+                        j = Judge(name=name)
+                        db.session.add(j)
+                        db.session.flush()
+                    rec.judge_id = j.id
+                for pos, rec in existing.items():
+                    if pos not in wanted_pos:
+                        db.session.delete(rec)
+                db.session.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            logger.warning("DB save_judge_list failed: %s", exc)
+
+    def get_effective_pairs(self, comp_folder: str, kata_key: str,
+                            stage: str) -> Optional[List[Dict[str, Any]]]:
+        """Строки пар из БД с ПОДТЯНУТЫМИ живыми данными реестра участников.
+
+        Для закрытых (завершённых) соревнований возвращает snapshot-данные
+        без подтягивания. Возвращает None, если в БД нет данных этапа
+        (тогда вызывающий должен использовать CSV).
+        """
+        try:
+            with self._lock:
+                disc = self._get_discipline(comp_folder, kata_key)
+                if disc is None:
+                    return None
+                recs = PairReg.query.filter_by(discipline_id=disc.id,
+                                               stage=stage).order_by(
+                    PairReg.pair_number).all()
+                if not recs:
+                    return None
+                closed = (disc.competition.status == 'closed') if disc.competition else False
+                out = []
+                for rec in recs:
+                    row = dict(rec.data_json or {})
+                    if not closed:
+                        for prefix, pid, snap in (
+                            ('Тори_', rec.tori_id, rec.tori_snapshot),
+                            ('Уке_', rec.uke_id, rec.uke_snapshot),
+                        ):
+                            det = None
+                            if pid is not None:
+                                p = db.session.get(Participant, pid)
+                                if p is not None:
+                                    det = p.to_csv_row()
+                            if det is None:
+                                det = dict(snap or {})
+                            row.update(_detail_to_row(det, prefix))
+                    out.append(row)
+                return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DB get_effective_pairs failed: %s", exc)
+            return None
+
+    def get_effective_judges(self, comp_folder: str,
+                             kata_key: str) -> Optional[List[Dict[str, Any]]]:
+        """Состав судей дисциплины из БД (подтягиваем ФИО из реестра)."""
+        try:
+            with self._lock:
+                disc = self._get_discipline(comp_folder, kata_key)
+                if disc is None:
+                    return None
+                entries = JudgeListEntry.query.filter_by(
+                    discipline_id=disc.id).order_by(
+                    JudgeListEntry.position).all()
+                if not entries:
+                    return None
+                out = []
+                for e in entries:
+                    name = e.judge_name
+                    category = ''
+                    if e.judge_id is not None:
+                        j = db.session.get(Judge, e.judge_id)
+                        if j is not None:
+                            name = j.name
+                            category = j.category or ''
+                    out.append({'место': str(e.position), 'ФИО': name,
+                                'категория': category})
+                return out
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DB get_effective_judges failed: %s", exc)
+            return None
 
     # ---------- Оценки судей ----------
 
