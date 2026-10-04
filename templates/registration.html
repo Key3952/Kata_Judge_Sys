@@ -242,6 +242,16 @@
 let pairCounter = 0;
 let judgeCounter = 0;
 
+// Дебаунс: не более одного запроса на 250 мс для данного набора аргументов
+const _acTimers = new Map();
+function debouncedFetch(key, url, cb) {
+    if (_acTimers.has(key)) clearTimeout(_acTimers.get(key));
+    _acTimers.set(key, setTimeout(() => {
+        _acTimers.delete(key);
+        fetch(url).then(r => r.json()).then(cb).catch(() => cb([]));
+    }, 250));
+}
+
 function createInput(name, placeholder, type="text", isAutocomplete=false) {
     const wrapper = document.createElement('div');
     wrapper.className = 'autocomplete-wrapper d-block w-100';
@@ -385,23 +395,22 @@ function attachAC(row) {
         currentIndex = -1;
         if (q.length < 2) { results.style.display = 'none'; return; }
 
-        fetch(`/api/participants/search?q=${encodeURIComponent(q)}`)
-            .then(r => r.json())
-            .then(data => {
-                results.innerHTML = '';
-                if (data.length) {
-                    results.style.display = 'block';
-                    data.forEach(name => {
-                        const div = document.createElement('div');
-                        div.className = 'autocomplete-item';
-                        div.textContent = name;
-                        div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
-                        results.appendChild(div);
-                    });
-                } else {
-                    results.style.display = 'none';
-                }
-            }).catch(() => { results.style.display = 'none'; });
+        debouncedFetch('p-search-' + row.dataset.pairId, `/api/participants/search?q=${encodeURIComponent(q)}`, (data) => {
+            if (input.value.trim() !== q) return; // устаревший ответ
+            results.innerHTML = '';
+            if (data.length) {
+                results.style.display = 'block';
+                data.forEach(name => {
+                    const div = document.createElement('div');
+                    div.className = 'autocomplete-item';
+                    div.textContent = name;
+                    div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
+                    results.appendChild(div);
+                });
+            } else {
+                results.style.display = 'none';
+            }
+        });
     });
 
     input.addEventListener('keydown', (e) => {
@@ -561,23 +570,22 @@ function attachColumnAC(input, field) {
         currentIndex = -1;
         if (q.length < 1) { results.style.display = 'none'; return; }
 
-        fetch(`/api/participants/column-suggestions?field=${encodeURIComponent(field)}&q=${encodeURIComponent(q)}`)
-            .then(r => r.json())
-            .then(data => {
-                results.innerHTML = '';
-                if (data.length) {
-                    results.style.display = 'block';
-                    data.forEach(val => {
-                        const div = document.createElement('div');
-                        div.className = 'autocomplete-item';
-                        div.textContent = val;
-                        div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
-                        results.appendChild(div);
-                    });
-                } else {
-                    results.style.display = 'none';
-                }
-            }).catch(() => { results.style.display = 'none'; });
+        debouncedFetch('col-' + field + '-' + (input.name || ''), `/api/participants/column-suggestions?field=${encodeURIComponent(field)}&q=${encodeURIComponent(q)}`, (data) => {
+            if (input.value.trim() !== q) return; // устаревший ответ
+            results.innerHTML = '';
+            if (data.length) {
+                results.style.display = 'block';
+                data.forEach(val => {
+                    const div = document.createElement('div');
+                    div.className = 'autocomplete-item';
+                    div.textContent = val;
+                    div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
+                    results.appendChild(div);
+                });
+            } else {
+                results.style.display = 'none';
+            }
+        });
     });
 
     input.addEventListener('keydown', (e) => {
@@ -664,23 +672,22 @@ function attachACJudges(input) {
         currentIndex = -1;
         if (q.length < 2) { results.style.display = 'none'; return; }
 
-        fetch(`/api/judges/search?q=${encodeURIComponent(q)}`)
-            .then(r => r.json())
-            .then(data => {
-                results.innerHTML = '';
-                if (data.length) {
-                    results.style.display = 'block';
-                    data.forEach(name => {
-                        const div = document.createElement('div');
-                        div.className = 'autocomplete-item';
-                        div.textContent = name;
-                        div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
-                        results.appendChild(div);
-                    });
-                } else {
-                    results.style.display = 'none';
-                }
-            }).catch(() => { results.style.display = 'none'; });
+        debouncedFetch('j-search-' + (input.name || ''), `/api/judges/search?q=${encodeURIComponent(q)}`, (data) => {
+            if (input.value.trim() !== q) return; // устаревший ответ
+            results.innerHTML = '';
+            if (data.length) {
+                results.style.display = 'block';
+                data.forEach(name => {
+                    const div = document.createElement('div');
+                    div.className = 'autocomplete-item';
+                    div.textContent = name;
+                    div.addEventListener('mousedown', (ev) => { ev.preventDefault(); selectItem(div); });
+                    results.appendChild(div);
+                });
+            } else {
+                results.style.display = 'none';
+            }
+        });
     });
 
     input.addEventListener('keydown', (e) => {
@@ -792,15 +799,34 @@ function saveJudgeToGlobalCSV(name) {
 
 let autosaveTimeout = null;
 let isSaving = false;
+let pendingSave = false;
 
-function autosave() {
-    if (isSaving) return;
-
+function buildAutosavePayload() {
     const formData = new FormData(document.getElementById('registrationForm'));
     const data = Object.fromEntries(formData.entries());
+    data['autosave'] = '1';
+    // Год рождения в глобальной базе хранится как YYYY — приводим date-input к тому же формату,
+    // иначе поиск по сохранённым участникам не находит записи (рассинхрон форматов).
+    for (const key of Object.keys(data)) {
+        if (/_birth$/.test(key)) {
+            const v = String(data[key] || '');
+            data[key] = /^\d{4}-\d{2}-\d{2}$/.test(v) ? v.slice(0, 4) : v;
+        }
+    }
+    return data;
+}
+
+function autosave() {
+    // Не сохраняем, пока открыт список автодополнения (пользователь ещё выбирает значение)
+    const openAC = document.querySelector('.autocomplete-results[style*="block"]');
+    if (openAC) { scheduleAutosave(); return; }
+
+    if (isSaving) { pendingSave = true; return; }
+
+    const data = buildAutosavePayload();
 
     // Проверяем, есть ли хоть какие-то данные для сохранения
-    const hasData = Object.values(data).some(v => String(v).trim() !== '');
+    const hasData = Object.entries(data).some(([k, v]) => k !== 'autosave' && String(v).trim() !== '');
     if (!hasData) return;
 
     isSaving = true;
@@ -820,13 +846,24 @@ function autosave() {
     .catch(err => console.warn('Автосохранение не удалось:', err))
     .finally(() => {
         isSaving = false;
+        if (pendingSave) { pendingSave = false; scheduleAutosave(); }
     });
 }
 
 function scheduleAutosave() {
     if (autosaveTimeout) clearTimeout(autosaveTimeout);
-    autosaveTimeout = setTimeout(autosave, 2500);
+    autosaveTimeout = setTimeout(autosave, 4000);
 }
+
+// При обычной отправке формы приводим все поля даты рождения к формату YYYY,
+// чтобы глобальная база участников хранила единый формат (иначе дубли и пропавшее автодополнение).
+document.addEventListener('submit', (e) => {
+    if (autosaveTimeout) { clearTimeout(autosaveTimeout); autosaveTimeout = null; }
+    document.querySelectorAll('#pairsList input[type="date"]').forEach(inp => {
+        const v = String(inp.value || '');
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) inp.value = v.slice(0, 4);
+    });
+});
 
 document.addEventListener('DOMContentLoaded', () => {
     const path = window.location.pathname.split('/');

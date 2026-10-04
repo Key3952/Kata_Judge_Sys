@@ -2,6 +2,7 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
+import threading
 import logging
 from datetime import datetime
 from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer
@@ -854,18 +855,30 @@ def register_participants(comp_name, kata_key):
         return redirect(url_for('edit_competition', comp_name=comp_name))
     
     if request.method == 'POST':
+        # Автосохранение из страницы регистрации: отвечаем JSON без редиректа
+        is_autosave = request.form.get('autosave') == '1'
+
         # Получаем данные из формы
         pairs_data = []
         judges_data = []
         
         # Парсим пары
         pair_index = 0
-        while True:
+        max_pair_index = -1
+        for k in request.form.keys():
+            if k.startswith('pair_') and k.endswith('_name'):
+                try:
+                    max_pair_index = max(max_pair_index, int(k.split('_')[1]))
+                except (IndexError, ValueError):
+                    pass
+
+        while pair_index <= max_pair_index:
             tori_name = request.form.get(f'pair_{pair_index}_tori_name', '').strip()
             uke_name = request.form.get(f'pair_{pair_index}_uke_name', '').strip()
-            
+
             if not tori_name or not uke_name:
-                break
+                pair_index += 1
+                continue
             
             tori_info = {
                 'ФИО': tori_name,
@@ -885,15 +898,13 @@ def register_participants(comp_name, kata_key):
                 'тренер': request.form.get(f'pair_{pair_index}_uke_coach', '')
             }
             
-            def is_fully_filled_participant(info):
-                for h in CompetitionCSVManager.PARTICIPANTS_HEADERS:
-                    if not str(info.get(h, '')).strip():
-                        return False
-                return True
+            def is_completable_participant(info):
+                # Достаточно ФИО и года рождения — остальные поля можно дозаполнить позже
+                return bool(str(info.get('ФИО', '')).strip()) and bool(str(info.get('год рождения', '')).strip())
             
-            if is_fully_filled_participant(tori_info):
+            if is_completable_participant(tori_info):
                 CSVManager.upsert_participant(PARTICIPANTS_CSV, tori_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
-            if is_fully_filled_participant(uke_info):
+            if is_completable_participant(uke_info):
                 CSVManager.upsert_participant(PARTICIPANTS_CSV, uke_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
             
             # Добавляем в локальный CSV пар
@@ -959,6 +970,8 @@ def register_participants(comp_name, kata_key):
             judges_file = os.path.join(disc_path, 'judges_list.csv')
             CSVManager.write_csv(judges_file, judges_data, CompetitionCSVManager.JUDGES_LIST_HEADERS)
         
+        if is_autosave:
+            return jsonify({'success': True})
         flash('Участники и судьи зарегистрированы', 'success')
         return redirect(url_for('edit_competition', comp_name=comp_name))
     
@@ -992,37 +1005,75 @@ def register_participants(comp_name, kata_key):
 
 # ==================== API ENDPOINTS ====================
 
+# Кеш подсказок автодополнения: key -> (timestamp, result). Снижает нагрузку
+# при быстром вводе текста (каждый символ дёргал полный пересмотр CSV).
+_suggestion_cache: dict = {}
+_suggestion_lock = threading.Lock()
+_SUGGESTION_TTL_SEC = 5.0
+
+
 @app.route('/api/participants/search')
 def search_participants():
-    """API для поиска участников по ФИО"""
-    query = request.args.get('q', '').strip()
+    """API для поиска участников по ФИО (с серверным кешем)."""
+    query = request.args.get('q', '').strip().lower()
     if not query or len(query) < 2:
         return jsonify([])
-    
-    suggestions = CSVManager.get_name_suggestions(PARTICIPANTS_CSV, query)
-    return jsonify(suggestions)
+
+    now = datetime.now()
+    key = ('participants', query)
+    with _suggestion_lock:
+        cached = _suggestion_cache.get(key)
+        if cached and (now - cached[0]).total_seconds() < _SUGGESTION_TTL_SEC:
+            return jsonify(cached[1])
+
+    rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+    out = []
+    seen = set()
+    for row in rows:
+        name = str(row.get('ФИО', '')).strip()
+        low = name.lower()
+        if low.startswith(query) and low not in seen:
+            seen.add(low)
+            out.append(name)
+        if len(out) >= 10:
+            break
+
+    with _suggestion_lock:
+        _suggestion_cache[key] = (now, out)
+    return jsonify(out)
 
 
 @app.route('/api/participants/column-suggestions')
 def participants_column_suggestions():
-    """Подсказки по уникальным значениям столбца СШ или тренер (глобальный participants.csv)."""
+    """Подсказки по уникальным значениям столбца СШ или тренер (с серверным кешем)."""
     field = request.args.get('field', '').strip()
-    q = request.args.get('q', '').strip()
+    q = request.args.get('q', '').strip().lower()
     if field not in ('СШ', 'тренер') or len(q) < 1:
         return jsonify([])
+
+    now = datetime.now()
+    key = ('column', field, q)
+    with _suggestion_lock:
+        cached = _suggestion_cache.get(key)
+        if cached and (now - cached[0]).total_seconds() < _SUGGESTION_TTL_SEC:
+            return jsonify(cached[1])
+
     rows = CSVManager.read_csv(PARTICIPANTS_CSV)
     out = []
     seen = set()
-    ql = q.lower()
     for row in rows:
-        v = (row.get(field) or '').strip()
-        if not v or v.lower() in seen:
+        v = str(row.get(field) or '').strip()
+        low = v.lower()
+        if not v or low in seen:
             continue
-        if v.lower().startswith(ql):
-            seen.add(v.lower())
+        if low.startswith(q):
+            seen.add(low)
             out.append(v)
         if len(out) >= 20:
             break
+
+    with _suggestion_lock:
+        _suggestion_cache[key] = (now, out)
     return jsonify(out)
 
 
@@ -1039,13 +1090,33 @@ def get_participant_info():
 
 @app.route('/api/judges/search')
 def search_judges():
-    """API для поиска судей по ФИО"""
-    query = request.args.get('q', '').strip()
+    """API для поиска судей по ФИО (с серверным кешем)."""
+    query = request.args.get('q', '').strip().lower()
     if not query or len(query) < 2:
         return jsonify([])
-    
-    suggestions = CSVManager.get_name_suggestions(JUDGES_CSV, query)
-    return jsonify(suggestions)
+
+    now = datetime.now()
+    key = ('judges', query)
+    with _suggestion_lock:
+        cached = _suggestion_cache.get(key)
+        if cached and (now - cached[0]).total_seconds() < _SUGGESTION_TTL_SEC:
+            return jsonify(cached[1])
+
+    rows = CSVManager.read_csv(JUDGES_CSV)
+    out = []
+    seen = set()
+    for row in rows:
+        name = str(row.get('ФИО', '')).strip()
+        low = name.lower()
+        if low.startswith(query) and low not in seen:
+            seen.add(low)
+            out.append(name)
+        if len(out) >= 10:
+            break
+
+    with _suggestion_lock:
+        _suggestion_cache[key] = (now, out)
+    return jsonify(out)
 
 
 @app.route('/api/judges/info')

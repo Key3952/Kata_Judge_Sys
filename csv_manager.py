@@ -1,10 +1,32 @@
 # csv_manager.py
 import csv
+import fcntl
+import io
 import os
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
+
+
+@contextmanager
+def _csv_lock(filepath: str):
+    """Блокировка файла на время чтения-записи (защита от конкурентных автосохранений)."""
+    lock_path = filepath + '.lock'
+    with open(lock_path, 'a+') as lf:
+        try:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            pass  # файловая система без flock — работаем без блокировки
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+
 
 class CSVManager:
     """Менеджер для работы с CSV файлами участников и судей"""
@@ -30,36 +52,52 @@ class CSVManager:
                 writer = csv.writer(f)
                 writer.writerow(headers)
     
+    # Кеш последних прочитанных CSV (по пути файла): (mtime, size, rows)
+    _read_cache: Dict[str, Tuple[float, int, List[Dict]]] = {}
+
     @staticmethod
     def read_csv(filepath: str) -> List[Dict]:
-        """Читает CSV файл и возвращает список словарей"""
+        """Читает CSV файл и возвращает список словарей (с кешем по mtime)."""
         if not os.path.exists(filepath):
             return []
-        
+
+        stat = None
+        try:
+            stat = os.stat(filepath)
+            cached = CSVManager._read_cache.get(filepath)
+            if cached is not None and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+                return [dict(r) for r in cached[2]]
+        except OSError:
+            stat = None
+
         rows = []
         try:
-            text = CSVManager._read_text_with_fallback(filepath)
-            import io
-            f = io.StringIO(text)
-            reader = csv.DictReader(f)
-            # Поврежденный/пустой заголовок: считаем файл пустым
-            if reader.fieldnames is None:
-                return []
-            for row in reader:
-                if row is None:
-                    continue
-                # Приводим None к пустым строкам
-                clean = {k: ('' if v is None else v) for k, v in row.items() if k is not None}
-                rows.append(clean)
+            with _csv_lock(filepath):
+                text = CSVManager._read_text_with_fallback(filepath)
+                import io
+                f = io.StringIO(text)
+                reader = csv.DictReader(f)
+                # Поврежденный/пустой заголовок: считаем файл пустым
+                if reader.fieldnames is None:
+                    return []
+                for row in reader:
+                    if row is None:
+                        continue
+                    # Приводим None к пустым строкам
+                    clean = {k: ('' if v is None else v) for k, v in row.items() if k is not None}
+                    rows.append(clean)
         except (csv.Error, TypeError, UnicodeDecodeError):
             # Некорректный CSV — не падаем в рантайме
             return []
+        if stat is not None:
+            CSVManager._read_cache[filepath] = (stat.st_mtime, stat.st_size, rows)
         return rows
     
     @staticmethod
     def write_csv(filepath: str, rows: List[Dict], headers: List[str]) -> None:
-        """Пишет данные в CSV файл"""
-        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+        """Пишет данные в CSV файл атомарно (временный файл + replace)."""
+        tmp_path = filepath + '.tmp'
+        with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
             writer.writeheader()
             normalized_rows = []
@@ -68,67 +106,86 @@ class CSVManager:
                     continue
                 normalized_rows.append({h: row.get(h, '') for h in headers})
             writer.writerows(normalized_rows)
+        os.replace(tmp_path, filepath)
+        CSVManager._read_cache.pop(filepath, None)
     
     @staticmethod
     def add_row(filepath: str, row: Dict, headers: List[str]) -> None:
-        """Добавляет новую строку в CSV файл"""
-        rows = CSVManager.read_csv(filepath)
-        
-        # Проверяем, что ФИО не пусто
-        fio = row.get('ФИО', '').strip()
+        """Добавляет новую строку в CSV файл (с блокировкой от конкурентных записей)"""
+        fio = str(row.get('ФИО', '')).strip()
         if not fio:
             return
-        
-        # Для глобальной базы участников требуется и ФИО и год рождения
-        # (определяется по наличию ключа 'год рождения' в row)
-        if 'год рождения' in row:
-            birth_year = row.get('год рождения', '').strip()
-            if not birth_year:
-                return  # Не сохраняем участников без года рождения
-        
-        # Проверяем, есть ли уже такая запись (по ФИО и году рождения для участников)
-        if 'год рождения' in row:
-            birth_year = row.get('год рождения', '').strip()
-            for existing_row in rows:
-                existing_fio = existing_row.get('ФИО', '').strip()
-                existing_birth = existing_row.get('год рождения', '').strip()
-                if existing_fio.lower() == fio.lower() and existing_birth == birth_year:
-                    return  # Уже существует
-        else:
-            # Для судей - проверяем по ФИО
-            for existing_row in rows:
-                if existing_row.get('ФИО', '').strip().lower() == fio.lower():
-                    return  # Уже существует
-        
-        rows.append(row)
-        CSVManager.write_csv(filepath, rows, headers)
+        with _csv_lock(filepath):
+            rows = CSVManager.read_csv(filepath)
+
+            # Для глобальной базы участников требуются и ФИО, и год рождения
+            birth_year = ''
+            if 'год рождения' in row:
+                birth_year = str(row.get('год рождения', '')).strip()
+                if not birth_year:
+                    return  # Не сохраняем участников без года рождения
+
+            # Проверяем, есть ли уже такая запись
+            if 'год рождения' in row:
+                for existing_row in rows:
+                    existing_fio = str(existing_row.get('ФИО', '')).strip()
+                    existing_birth = str(existing_row.get('год рождения', '')).strip()
+                    if existing_fio.lower() == fio.lower() and existing_birth == birth_year:
+                        return  # Уже существует
+            else:
+                # Для судей - проверяем по ФИО
+                for existing_row in rows:
+                    if str(existing_row.get('ФИО', '')).strip().lower() == fio.lower():
+                        return  # Уже существует
+
+            rows.append(row)
+            CSVManager.write_csv(filepath, rows, headers)
+
+    @staticmethod
+    def _norm_birth(value) -> str:
+        """Нормализация года рождения: '1970-01-01'/'01.01.1970' -> '1970', иначе как есть."""
+        s = str(value or '').strip()
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', s):
+            return s[:4]
+        if re.fullmatch(r'\d{2}\.\d{2}\.(\d{4})', s):
+            return s[-4:]
+        return s
 
     @staticmethod
     def upsert_participant(filepath: str, row: Dict, headers: List[str]) -> None:
-        """Добавляет или полностью перезаписывает участника по ФИО (без учёта регистра).
+        """Добавляет или обновляет участника в глобальной базе (файл блокируется).
 
-        Запись создаётся/обновляется только если заполнены все поля из headers.
-        При совпадении ФИО с существующей строкой данные заменяются новыми.
+        Обновление — «мягкое»: непустые новые значения перезаписывают старые,
+        пустые поля не затирают уже сохранённые данные.
+        Совпадение записи: ФИО + год рождения (с нормализацией формата даты).
         """
-        fio = row.get('ФИО', '').strip()
+        fio = str(row.get('ФИО', '')).strip()
         if not fio:
             return
-        for h in headers:
-            val = row.get(h, '')
-            if val is None or str(val).strip() == '':
-                return
-        rows = CSVManager.read_csv(filepath)
-        new_row = {h: str(row.get(h, '')).strip() for h in headers}
-        found_idx = None
-        for i, existing in enumerate(rows):
-            if existing.get('ФИО', '').strip().lower() == fio.lower():
-                found_idx = i
-                break
-        if found_idx is not None:
-            rows[found_idx] = new_row
-        else:
-            rows.append(new_row)
-        CSVManager.write_csv(filepath, rows, headers)
+        with _csv_lock(filepath):
+            rows = CSVManager.read_csv(filepath)
+            birth_norm = CSVManager._norm_birth(row.get('год рождения', ''))
+            new_row = None
+            found_idx = None
+            for i, existing in enumerate(rows):
+                ex_fio = str(existing.get('ФИО', '')).strip().lower()
+                ex_birth = CSVManager._norm_birth(existing.get('год рождения', ''))
+                if ex_fio == fio.lower() and (not birth_norm or not ex_birth or ex_birth == birth_norm):
+                    found_idx = i
+                    merged = dict(existing)
+                    for h in headers:
+                        val = str(row.get(h, '') or '').strip()
+                        if val:
+                            merged[h] = val
+                    new_row = merged
+                    break
+            if new_row is None:
+                new_row = {h: str(row.get(h, '') or '').strip() for h in headers}
+            if found_idx is not None:
+                rows[found_idx] = new_row
+            else:
+                rows.append(new_row)
+            CSVManager.write_csv(filepath, rows, headers)
     
     @staticmethod
     def search_by_name(filepath: str, name: str) -> Optional[Dict]:
