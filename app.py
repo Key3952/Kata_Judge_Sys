@@ -23,7 +23,8 @@ from flask_socketio import SocketIO
 import config
 import technics
 from db_service import DBService, configure_sqlite_pragmas
-from models import db, Participant, Judge, DisciplinePair
+from models import (db, Participant, Judge, Discipline, Competition,
+                    DisciplinePair)
 from csv_import import import_participants_csv, import_judges_csv
 
 logging.basicConfig(
@@ -194,7 +195,7 @@ def api_finish() -> Response:
 
 @app.get("/api/pairs")
 def api_pairs() -> Response:
-    comp, kata = current_competition(), request.args.get("kata", "")
+    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
     stage = request.args.get("stage", "qual")
     return jsonify(svc.get_effective_pairs(comp, kata, stage))
 
@@ -202,7 +203,9 @@ def api_pairs() -> Response:
 @app.post("/api/pairs")
 @require_admin
 def api_save_pairs() -> Response:
-    comp, kata = current_competition(), request.json.get("kata", "")
+    if not request.is_json:
+        return jsonify({"error": "json required"}), 415
+    comp, kata = current_competition(), _norm_kata(request.json.get("kata", ""))
     stage = request.json.get("stage", "qual")
     disc = svc.get_or_create_discipline(comp, kata,
                                         techniques_count=request.json.get(
@@ -217,7 +220,7 @@ def api_save_pairs() -> Response:
 @require_admin
 def api_draw() -> Response:
     """П.8: жеребьёвка порядка выступления."""
-    comp, kata = current_competition(), request.json.get("kata", "")
+    comp, kata = current_competition(), _norm_kata(request.json.get("kata", ""))
     stage = request.json.get("stage", "qual")
     disc = svc.get_or_create_discipline(comp, kata)
     order = svc.draw_start_order(disc.id, stage)
@@ -230,7 +233,7 @@ def api_draw() -> Response:
 
 @app.get("/api/judge-list")
 def api_judge_list() -> Response:
-    comp, kata = current_competition(), request.args.get("kata", "")
+    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
     return jsonify(svc.get_effective_judges(comp, kata,
                                             request.args.get("stage", "qual")))
 
@@ -253,7 +256,7 @@ def api_save_score() -> Response:
     """Сохранение оценки судьи; пуш leaderboard всем подключённым табло."""
     data = request.get_json(silent=True) or {}
     comp = data.get("competition") or current_competition()
-    kata = data.get("kata", "")
+    kata = _norm_kata(data.get("kata", ""))
     stage = data.get("stage", "qual")
     judge_name = (data.get("judge_name") or "").strip()
     pair_number = int(data.get("pair_number", 0) or 0)
@@ -269,7 +272,7 @@ def api_save_score() -> Response:
 
 @app.get("/api/leaderboard")
 def api_leaderboard() -> Response:
-    comp, kata = current_competition(), request.args.get("kata", "")
+    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
     stage = request.args.get("stage", "qual")
     return jsonify({
         "rows": svc.build_leaderboard(comp, kata, stage),
@@ -281,7 +284,7 @@ def api_leaderboard() -> Response:
 
 @app.get("/api/export/protocol.csv")
 def api_export_csv() -> Response:
-    comp, kata = current_competition(), request.args.get("kata", "")
+    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
     rows = svc.export_protocol_rows(comp, kata, request.args.get("stage", "qual"))
     buf = io.StringIO()
     if rows:
@@ -296,7 +299,7 @@ def api_export_csv() -> Response:
 
 @app.get("/api/export/protocol.xlsx")
 def api_export_xlsx() -> Response:
-    comp, kata = current_competition(), request.args.get("kata", "")
+    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
     rows = svc.export_protocol_rows(comp, kata, request.args.get("stage", "qual"))
     try:
         from openpyxl import Workbook
@@ -322,7 +325,7 @@ def api_export_xlsx() -> Response:
 
 @app.get("/api/export/protocol.pdf")
 def api_export_pdf() -> Response:
-    comp, kata = current_competition(), request.args.get("kata", "")
+    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
     stage = request.args.get("stage", "qual")
     rows = svc.export_protocol_rows(comp, kata, stage)
     meta = svc.get_competition_meta(comp)
@@ -379,6 +382,543 @@ def emit_rows(comp: str, kata: str, stage: str) -> None:
         "rows": svc.build_leaderboard(comp, kata, stage),
         "meta": svc.get_competition_meta(comp),
     })
+
+
+# ---------- HTML-страницы (шаблоны взяты из репозитория) ----------
+
+def _kata_display(kata_key: str) -> str:
+    norm = lambda s: s.lower().replace(" ", "").replace("-", "").replace("_", "")
+    for name in technics.Technics:
+        if norm(name) == norm(kata_key):
+            return name
+    return kata_key or ""
+
+
+def _norm_kata(kata_key: str) -> str:
+    """Приведение ключа ката к каноническому виду technics._disc_key."""
+    norm = lambda s: s.lower().replace(" ", "").replace("-", "").replace("_", "")
+    for key in technics.DISCIPLINE_ROWS_BY_KEY:
+        if norm(key) == norm(kata_key):
+            return key
+    return (kata_key or "").lower()
+
+
+@app.get("/")
+def index() -> Response:
+    return redirect(url_for("main_tablo"))
+
+
+@app.get("/login")
+def admin_login() -> Response:
+    return render_template("login.html")
+
+
+@app.post("/login")
+def admin_login_post() -> Response:
+    password = request.form.get("password", "")
+    if password == config.ADMIN_PASSWORD:
+        session["is_admin"] = True
+        return redirect(url_for("admin_dashboard"))
+    return render_template("login.html", message="Неверный пароль"), 401
+
+
+@app.get("/logout")
+def admin_logout() -> Response:
+    session.clear()
+    return redirect(url_for("admin_login"))
+
+
+@app.get("/admin")
+@app.get("/admin/dashboard")
+def admin_dashboard() -> Response:
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_login"))
+    competitions = svc.get_all_competitions()
+    return render_template("admin_dashboard.html", competitions=competitions)
+
+
+@app.get("/config")
+@app.get("/admin/config")
+@app.get("/competition/config")
+@app.route("/config/competition", endpoint="config_competition")
+def config_page() -> Response:
+    comp = current_competition()
+    meta = svc.get_competition_meta(comp)
+    meta.setdefault("name", meta.get("title") or config.DEFAULT_COMPETITION_TITLE)
+    meta.setdefault("status", "open")
+    meta.setdefault("created", meta.get("date") or "")
+    disciplines = []
+    for key, rows in technics.DISCIPLINE_ROWS_BY_KEY.items():
+        disciplines.append({
+            "key": key, "name": _kata_display(key),
+            "pair_count": len(svc.get_effective_pairs(comp, key, "qual")),
+            "stage": {"mode": "qual", "status": "open", "final_top_n": 3},
+            "stage_label": "Квалификация",
+        })
+    return render_template("config.html", config=meta, disciplines=disciplines)
+
+
+@app.get("/admin/<comp_name>")
+@app.get("/admin/competition/<comp_name>")
+def edit_competition(comp_name: str) -> Response:
+    """Страница редактирования соревнования (данные — из БД)."""
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_login"))
+    svc.get_or_create_competition(comp_name)
+    meta = svc.get_competition_meta(comp_name)
+    config_ctx = {
+        "name": meta.get("title") or comp_name,
+        "display_name": meta.get("title") or comp_name,
+        "status": meta.get("status", "open"),
+        "main_tablo_discipline": meta.get("main_tablo_discipline") or "",
+        "created": meta.get("date") or "",
+        "banner": meta.get("subtitle") or "",
+    }
+    disciplines = []
+    for d in Discipline.query.filter_by(
+            competition_id=svc.get_or_create_competition(comp_name).id).all():
+        disciplines.append({
+            "key": d.kata_key, "name": d.display_name or _kata_display(d.kata_key),
+            "pair_count": len(svc.get_effective_pairs(comp_name, d.kata_key, "qual")),
+            "stage": {"mode": "qual", "status": "open",
+                      "final_top_n": meta.get("final_top_n", 3)},
+            "stage_label": "Квалификация",
+        })
+    available = [{"key": k, "name": _kata_display(k)}
+                 for k in technics.DISCIPLINE_ROWS_BY_KEY]
+    protocol_status = {"disciplines": [
+        {"key": d["key"], "name": d["name"],
+         "pairs_registered": d["pair_count"] > 0,
+         "judge_protocol_files": [], "ready": False}
+        for d in disciplines]}
+    return render_template("edit_competition.html",
+                           comp_name=comp_name, config=config_ctx,
+                           disciplines=disciplines,
+                           available_disciplines=available,
+                           protocol_status=protocol_status)
+
+
+@app.get("/data-editor")
+def data_editor() -> Response:
+    return render_template("data_editor.html")
+
+
+@app.get("/tablo")
+@app.get("/tablo/<comp_name>/<kata_key>")
+@app.get("/tablo/<comp_name>/<kata_key>/<stage>")
+def tablo(comp_name: str | None = None, kata_key: str = "",
+          stage: str = "qual") -> Response:
+    comp = comp_name or current_competition()
+    kata_key = _norm_kata(kata_key)
+    meta = svc.get_competition_meta(comp)
+    cfg = {
+        "name": meta.get("title") or config.DEFAULT_COMPETITION_TITLE,
+        "display_name": meta.get("title") or config.DEFAULT_COMPETITION_TITLE,
+        "banner": meta.get("subtitle") or "",
+        "main_tablo_discipline": meta.get("main_tablo_discipline") or kata_key,
+    }
+    kata = kata_key or cfg["main_tablo_discipline"] or ""
+    judges = svc.get_effective_judges(comp, kata, stage)
+    board = svc.build_leaderboard(comp, kata, stage)
+    results = []
+    for r in board:
+        per_judge = svc.list_judge_scores(comp, kata, stage, "", r["pair_number"])
+        score_map = {j["name"]: j["total"] for j in per_judge}
+        results.append({
+            "place": r["place"], "pair_number": r["pair_number"],
+            "tori_cell": {"name": r["tori"].get("name", ""), "detail": None},
+            "uke_cell": {"name": r["uke"].get("name", ""), "detail": None},
+            "judge_scores": [score_map.get(j["name"]) for j in judges],
+            "final_score": r["final_score"],
+        })
+    return render_template("tablo.html", comp_name=comp, kata_key=kata,
+                           stage=stage, config=cfg, judges=judges,
+                           results=results, display_date=meta.get("date") or "")
+
+
+@app.get("/main-tablo")
+@app.get("/main_tablo")
+def main_tablo() -> Response:
+    comp = current_competition()
+    meta = svc.get_competition_meta(comp)
+    kata = meta.get("main_tablo_discipline") or ""
+    stage = meta.get("current_stage", "qual")
+    judges = svc.get_effective_judges(comp, kata, stage)
+    board = svc.build_leaderboard(comp, kata, stage)
+    results = []
+    for r in board:
+        per_judge = svc.list_judge_scores(comp, kata, stage, "", r["pair_number"])
+        score_map = {j["name"]: j["total"] for j in per_judge}
+        results.append({
+            "place": r["place"], "pair_number": r["pair_number"],
+            "tori_cell": {"name": r["tori"].get("name", ""), "detail": None},
+            "uke_cell": {"name": r["uke"].get("name", ""), "detail": None},
+            "judge_scores": [score_map.get(j["name"]) for j in judges],
+            "final_score": r["final_score"],
+        })
+    cfg = {"name": meta.get("title") or config.DEFAULT_COMPETITION_TITLE,
+           "banner": meta.get("subtitle") or "",
+           "main_tablo_discipline": kata}
+    return render_template("main_tablo_dynamic.html", config=cfg,
+                           comp_name=comp, kata_key=kata, stage=stage,
+                           judges=judges, results=results)
+
+
+@app.get("/dashboard")
+@app.get("/public")
+def public_dashboard() -> Response:
+    comps = []
+    for c in svc.get_all_competitions():
+        folder = c.get("folder_name") or c.get("name", "")
+        ds = Discipline.query.filter_by(competition_id=c.get("id")).all() \
+            if c.get("id") else []
+        comps.append({**c, "disciplines": [
+            {"key": d.kata_key, "name": d.display_name or _kata_display(d.kata_key)}
+            for d in ds]})
+    return render_template("public_dashboard.html", competitions=comps)
+
+
+@app.get("/registration/<comp_name>/<kata_key>")
+def register_participants(comp_name: str, kata_key: str) -> Response:
+    kata_key = _norm_kata(kata_key)
+    pairs = svc.get_effective_pairs(comp_name, kata_key,
+                                    request.args.get("stage", "qual"))
+    return render_template("registration.html", comp_name=comp_name,
+                           kata_key=kata_key, pairs=pairs,
+                           disciplines=list(technics.DISCIPLINE_ROWS_BY_KEY))
+
+
+@app.get("/judge/<comp_name>/<kata_key>/<judge_name>")
+@app.get("/judge/<comp_name>/<kata_key>/<judge_name>/<position>")
+def judge_page(comp_name: str, kata_key: str, judge_name: str,
+               position: str = "1") -> Response:
+    kata_key = _norm_kata(kata_key)
+    stage = request.args.get("stage", "qual")
+    disc = None
+    comp = Competition.query.filter_by(folder_name=comp_name).first()
+    if comp is not None:
+        disc = Discipline.query.filter_by(competition_id=comp.id,
+                                          kata_key=kata_key).first()
+    techniques = list(technics.DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
+    if disc is not None and disc.techniques_count:
+        techniques = techniques[:disc.techniques_count]
+    pairs = svc.get_effective_pairs(comp_name, kata_key, stage)
+    judges = svc.get_effective_judges(comp_name, kata_key, stage)
+    return render_template("judge_form.html", comp_name=comp_name,
+                           kata_key=kata_key, judge=judge_name,
+                           judge_name=judge_name, stage=stage,
+                           techniques=techniques, pairs=pairs, judges=judges,
+                           judge_positions=[1, 2, 3, 4, 5, 6, 7],
+                           stage_error=None)
+
+
+@app.get("/results/<comp_name>/<kata_key>")
+def results_page(comp_name: str, kata_key: str) -> Response:
+    kata_key = _norm_kata(kata_key)
+    stage = request.args.get("stage", "qual")
+    board = svc.build_leaderboard(comp_name, kata_key, stage)
+    judges = svc.get_effective_judges(comp_name, kata_key, stage)
+    results = []
+    for r in board:
+        per_judge = svc.list_judge_scores(comp_name, kata_key, stage, "",
+                                          r["pair_number"])
+        score_map = {j["name"]: j["total"] for j in per_judge}
+        results.append({
+            "place": r["place"], "pair_number": r["pair_number"],
+            "scores": [score_map.get(j["name"]) for j in judges],
+            "final_score": r["final_score"],
+            "pair": {"tori": r["tori"], "uke": r["uke"]},
+        })
+    return render_template("results.html", results=results, judges=judges,
+                           comp_name=comp_name, kata_key=kata_key)
+
+
+# ---------- админские JSON-действия для шаблонов ----------
+
+def _reload_board(comp: str, kata: str, stage: str) -> None:
+    socketio.emit("leaderboard", {"rows": svc.build_leaderboard(comp, kata, stage)},
+                  room=f"tablo:{comp}:{kata}:{stage}")
+
+
+@app.post("/admin/create")
+@require_admin
+def api_create_competition() -> Response:
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    folder = re.sub(r"[^\w\-]+", "_", name)[:80]
+    comp = svc.get_or_create_competition(folder)
+    svc.set_competition_meta(folder, title=name)
+    return jsonify({"ok": True, "folder": folder, "id": comp.id}), 201
+
+
+@app.post("/admin/clear-participants")
+@require_admin
+def api_clear_participants() -> Response:
+    with app.app_context():
+        n = svc.clear_participants()
+    return jsonify({"ok": True, "deleted": n})
+
+
+@app.post("/admin/clear-judges")
+@require_admin
+def api_clear_judges() -> Response:
+    with app.app_context():
+        n = svc.clear_judges()
+    return jsonify({"ok": True, "deleted": n})
+
+
+@app.post("/admin/<comp_name>/add-discipline")
+@require_admin
+def api_add_discipline(comp_name: str) -> Response:
+    data = request.get_json(silent=True) or {}
+    kata = _norm_kata(data.get("kata") or data.get("key") or "")
+    if kata not in technics.DISCIPLINE_ROWS_BY_KEY:
+        return jsonify({"error": "unknown discipline"}), 400
+    disc = svc.get_or_create_discipline(comp_name, kata,
+                                        techniques_count=int(
+                                            data.get("techniques_count", 10)))
+    return jsonify({"ok": True, "id": disc.id})
+
+
+@app.post("/admin/<comp_name>/remove-discipline")
+@require_admin
+def api_remove_discipline(comp_name: str) -> Response:
+    data = request.get_json(silent=True) or {}
+    kata = _norm_kata(data.get("kata") or data.get("key") or "")
+    comp = Competition.query.filter_by(folder_name=comp_name).first()
+    if comp is None:
+        return jsonify({"error": "not found"}), 404
+    Discipline.query.filter_by(competition_id=comp.id, kata_key=kata)\
+        .delete(synchronize_session=False)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/admin/<comp_name>/set-main-tablo")
+@require_admin
+def api_set_main_tablo(comp_name: str) -> Response:
+    data = request.get_json(silent=True) or {}
+    svc.set_main_tablo(comp_name, data.get("discipline") or data.get("kata") or None)
+    socketio.emit("meta_updated", {"competition": comp_name},
+                  room=f"tablo:{comp_name}")
+    return jsonify({"ok": True})
+
+
+@app.post("/admin/<comp_name>/generate-protocols")
+@require_admin
+def api_generate_protocols(comp_name: str) -> Response:
+    # протоколы формируются на лету; проверка целостности данных
+    ok = Competition.query.filter_by(folder_name=comp_name).first() is not None
+    return jsonify({"ok": ok}), (200 if ok else 404)
+
+
+@app.post("/admin/<comp_name>/<new_status>")
+@require_admin
+def api_set_comp_status(comp_name: str, new_status: str) -> Response:
+    if new_status not in ("open", "close"):
+        return jsonify({"error": "bad status"}), 400
+    svc.set_comp_status(comp_name, new_status)
+    return jsonify({"ok": True})
+
+
+@app.post("/admin/<comp_name>/<discipline_key>/stage")
+@require_admin
+def api_set_stage(comp_name: str, discipline_key: str) -> Response:
+    discipline_key = _norm_kata(discipline_key)
+    data = request.get_json(silent=True) or {}
+    stage = data.get("stage") or data.get("mode") or "qual"
+    top_n = int(data.get("final_top_n", 3) or 3)
+    if stage == "final":
+        svc.promote_top_to_final(comp_name, discipline_key, top_n)
+    svc.set_current_stage(comp_name, stage, top_n)
+    _reload_board(comp_name, discipline_key, "qual")
+    _reload_board(comp_name, discipline_key, "final")
+    return jsonify({"ok": True})
+
+
+@app.delete("/admin/<comp_name>/delete")
+@app.post("/admin/<comp_name>/delete")
+@require_admin
+def api_delete_competition(comp_name: str) -> Response:
+    ok = svc.delete_competition(comp_name)
+    return jsonify({"ok": ok}), (200 if ok else 404)
+
+
+# ---------- API для шаблонов (поиск, автодополнение, регистрация, судьи) ----------
+
+@app.get("/api/participants/search")
+def api_participants_search() -> Response:
+    q = request.args.get("q", "")
+    return jsonify([p.to_dict() for p in svc.search_participants(q)])
+
+
+@app.get("/api/participants/column-suggestions")
+def api_column_suggestions() -> Response:
+    field = request.args.get("field", "")
+    q = request.args.get("q", "")
+    return jsonify(svc.column_suggestions(field, q))
+
+
+@app.get("/api/participants/info")
+def api_participant_info() -> Response:
+    info = svc.participant_info(request.args.get("name", ""))
+    return jsonify(info or {})
+
+
+@app.get("/api/judges/search")
+def api_judges_search() -> Response:
+    q = request.args.get("q", "").lower().strip()
+    items = Judge.query.order_by(Judge.name).limit(500).all()
+    if q:
+        items = [j for j in items if q in (j.name or "").lower()]
+    return jsonify([j.to_dict() for j in items])
+
+
+@app.get("/api/<comp_name>/<kata_key>/registration-data")
+def api_registration_data(comp_name: str, kata_key: str) -> Response:
+    kata_key = _norm_kata(kata_key)
+    stage = request.args.get("stage", "qual")
+    return jsonify({
+        "pairs": svc.get_effective_pairs(comp_name, kata_key, stage),
+        "participants": [p.to_dict() for p in
+                         Participant.query.order_by(Participant.name).limit(1000).all()],
+    })
+
+
+@app.post("/api/<comp_name>/<kata_key>/registration")
+@require_admin
+def api_registration_save(comp_name: str, kata_key: str) -> Response:
+    kata_key = _norm_kata(kata_key)
+    data = request.get_json(silent=True) or {}
+    stage = data.get("stage", "qual")
+    svc.get_or_create_discipline(comp_name, kata_key,
+                                 techniques_count=int(
+                                     data.get("techniques_count", 10) or 10))
+    svc.save_pairs(svc.get_or_create_discipline(comp_name, kata_key).id,
+                   stage, data.get("pairs", []))
+    _reload_board(comp_name, kata_key, stage)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/<comp_name>/<kata_key>/save-judge-action")
+def api_save_judge_action(comp_name: str, kata_key: str) -> Response:
+    """Сохранение оценки с формы судьи (template judge_form.html)."""
+    kata_key = _norm_kata(kata_key)
+    data = request.get_json(silent=True) or {}
+    stage = data.get("stage", "qual")
+    judge_name = (data.get("judge") or data.get("judge_name") or "").strip()
+    pair_number = int(data.get("pair_number") or data.get("pair") or 0)
+    raw = data.get("techniques_raw") or data.get("techniques") or data.get("scores") or {}
+    if not judge_name or pair_number <= 0:
+        return jsonify({"error": "judge and pair_number required"}), 400
+    total = svc.save_judge_score(comp_name, kata_key, stage, judge_name,
+                                 pair_number, raw)
+    _reload_board(comp_name, kata_key, stage)
+    return jsonify({"ok": True, "total": total})
+
+
+@app.get("/api/data/<table_name>")
+def api_data_get(table_name: str) -> Response:
+    return _data_editor_dispatch(table_name)
+
+
+@app.put("/api/data/<table_name>/<int:item_id>")
+@app.post("/api/data/<table_name>/<int:item_id>")
+@require_admin
+def api_data_put(table_name: str, item_id: int) -> Response:
+    return _data_editor_dispatch(table_name, item_id=item_id, method="PUT")
+
+
+@app.delete("/api/data/<table_name>/<int:item_id>")
+@require_admin
+def api_data_delete(table_name: str, item_id: int) -> Response:
+    return _data_editor_dispatch(table_name, item_id=item_id, method="DELETE")
+
+
+@app.post("/api/data/<table_name>")
+@require_admin
+def api_data_post(table_name: str) -> Response:
+    return _data_editor_dispatch(table_name, method="POST")
+
+
+def _data_editor_dispatch(table_name: str, item_id: int | None = None,
+                          method: str = "GET") -> Response:
+    search = request.args.get("search", "")
+    if table_name == "participants":
+        if method == "GET":
+            items = svc.search_participants(search, limit=500) if search else \
+                Participant.query.order_by(Participant.name).limit(500).all()
+            return jsonify({"items": [p.to_dict() for p in items]})
+        data = request.get_json(silent=True) or {}
+        if method == "POST":
+            p = svc.upsert_participant(
+                data.get("name", "").strip(),
+                int(data["birth_year"]) if data.get("birth_year") else None,
+                rank=data.get("rank"), kyu=data.get("kyu"),
+                sports_school=data.get("sports_school"), coach=data.get("coach"))
+            return jsonify(p.to_dict()), 201
+        if method == "PUT" and item_id:
+            fields = {k: v for k, v in data.items()
+                      if k in ("name", "birth_year", "rank", "kyu",
+                               "sports_school", "coach")}
+            p = svc.update_participant(item_id, **fields)
+            return (jsonify(p.to_dict()), 200) if p else \
+                (jsonify({"error": "not found"}), 404)
+        if method == "DELETE" and item_id:
+            p = db.session.get(Participant, item_id)
+            if p is None:
+                return jsonify({"error": "not found"}), 404
+            db.session.delete(p)
+            db.session.commit()
+            return jsonify({"ok": True})
+    elif table_name == "judges":
+        if method == "GET":
+            items = Judge.query.order_by(Judge.name).limit(500).all()
+            if search:
+                items = [j for j in items if search.lower() in (j.name or "").lower()]
+            return jsonify({"items": [j.to_dict() for j in items]})
+        data = request.get_json(silent=True) or {}
+        if method == "POST":
+            j = svc.upsert_judge(data.get("name", "").strip(),
+                                 category=data.get("category"),
+                                 region=data.get("region"))
+            return jsonify(j.to_dict()), 201
+        if method == "PUT" and item_id:
+            fields = {k: v for k, v in data.items()
+                      if k in ("name", "category", "region")}
+            j = svc.update_judge(item_id, **fields)
+            return (jsonify(j.to_dict()), 200) if j else \
+                (jsonify({"error": "not found"}), 404)
+        if method == "DELETE" and item_id:
+            j = db.session.get(Judge, item_id)
+            if j is None:
+                return jsonify({"error": "not found"}), 404
+            db.session.delete(j)
+            db.session.commit()
+            return jsonify({"ok": True})
+    elif table_name == "competitions":
+        if method == "GET":
+            return jsonify({"items": svc.get_all_competitions()})
+        if method == "POST":
+            data = request.get_json(silent=True) or {}
+            name = (data.get("name") or "").strip()
+            if not name:
+                return jsonify({"error": "name required"}), 400
+            folder = data.get("folder_name") or re.sub(
+                r"[^\w\-]+", "_", name)[:80]
+            c = svc.get_or_create_competition(folder)
+            svc.set_competition_meta(folder, title=name)
+            return jsonify({"id": c.id, "folder_name": folder}), 201
+        if method == "DELETE" and item_id:
+            c = db.session.get(Competition, item_id)
+            if c is None:
+                return jsonify({"error": "not found"}), 404
+            db.session.delete(c)
+            db.session.commit()
+            return jsonify({"ok": True})
+    return jsonify({"error": f"unsupported table/method: {table_name}/{method}"}), 400
 
 
 # ---------- init ----------
