@@ -1,10 +1,43 @@
 # csv_manager.py
 import csv
 import os
+import io
 import json
 import re
+import fcntl
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
+
+# Глобальный реентерабельный мьютекс сериализует все операции чтения/записи CSV
+# внутри процесса; fcntl.flock на sidecar-файле .lock синхронизирует несколько
+# процессов/потоков (realtime с нескольких компьютеров через один сервер).
+_csv_lock = threading.RLock()
+
+
+@contextmanager
+def _file_lock(filepath: str):
+    """Блокировка на level_locks + flock на sidecar-файле."""
+    with _csv_lock:
+        lock_path = filepath + '.lock'
+        lf = None
+        try:
+            os.makedirs(os.path.dirname(lock_path) or '.', exist_ok=True)
+            lf = open(lock_path, 'a+')
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            lf = None  # блокировка недоступна (NFS и т.п.) — работаем без неё
+        try:
+            yield
+        finally:
+            if lf is not None:
+                try:
+                    fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                lf.close()
+
 
 class CSVManager:
     """Менеджер для работы с CSV файлами участников и судей"""
@@ -37,37 +70,42 @@ class CSVManager:
             return []
         
         rows = []
-        try:
-            text = CSVManager._read_text_with_fallback(filepath)
-            import io
-            f = io.StringIO(text)
-            reader = csv.DictReader(f)
-            # Поврежденный/пустой заголовок: считаем файл пустым
-            if reader.fieldnames is None:
+        with _file_lock(filepath):
+            try:
+                text = CSVManager._read_text_with_fallback(filepath)
+                f = io.StringIO(text)
+                reader = csv.DictReader(f)
+                # Поврежденный/пустой заголовок: считаем файл пустым
+                if reader.fieldnames is None:
+                    return []
+                for row in reader:
+                    if row is None:
+                        continue
+                    # Приводим None к пустым строкам
+                    clean = {k: ('' if v is None else v) for k, v in row.items() if k is not None}
+                    rows.append(clean)
+            except (csv.Error, TypeError, UnicodeDecodeError):
+                # Некорректный CSV — не падаем в рантайме
                 return []
-            for row in reader:
-                if row is None:
-                    continue
-                # Приводим None к пустым строкам
-                clean = {k: ('' if v is None else v) for k, v in row.items() if k is not None}
-                rows.append(clean)
-        except (csv.Error, TypeError, UnicodeDecodeError):
-            # Некорректный CSV — не падаем в рантайме
-            return []
         return rows
     
     @staticmethod
     def write_csv(filepath: str, rows: List[Dict], headers: List[str]) -> None:
-        """Пишет данные в CSV файл"""
-        with open(filepath, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
-            writer.writeheader()
-            normalized_rows = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                normalized_rows.append({h: row.get(h, '') for h in headers})
-            writer.writerows(normalized_rows)
+        """Пишет данные в CSV файл (атомарно: temp + rename, под блокировкой)"""
+        with _file_lock(filepath):
+            tmp_path = filepath + '.tmp'
+            with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
+                writer.writeheader()
+                normalized_rows = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    normalized_rows.append({h: row.get(h, '') for h in headers})
+                writer.writerows(normalized_rows)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, filepath)
     
     @staticmethod
     def add_row(filepath: str, row: Dict, headers: List[str]) -> None:

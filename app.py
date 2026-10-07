@@ -1,1024 +1,1438 @@
-"""Система судейства дзюдо-ката. БД (SQLite/WAL) — единственный источник
-данных; CSV оставлен только для импорта старых баз и экспорта протоколов.
-
-Realtime (п.7): SocketIO room 'tablo:<comp>:<kata>:<stage>' — табло на любом
-числе компьютеров обновляется при сохранении оценки без F5.
-
-HTML-шаблоны взяты из репозитория; все url_for-эндпоинты, fetch-URL и поля
-шаблонов реализованы здесь поверх БД-сервиса.
-"""
-from __future__ import annotations
-
-import csv
-import io
-import logging
-import re
-import sys
-from pathlib import Path
-
-from flask import (Flask, Response, jsonify, redirect, render_template,
-                   request, session, url_for)
-from flask_socketio import SocketIO
-
-import config
-import technics
-from db_service import DBService, configure_sqlite_pragmas
-from models import (db, Participant, Judge, Discipline, Competition,
-                    DisciplinePair)
-from csv_import import import_participants_csv, import_judges_csv
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
-)
-logger = logging.getLogger("judo_kata")
-
-app = Flask(__name__)
-app.config["SECRET_KEY"] = config.SECRET_KEY
-app.config["SQLALCHEMY_DATABASE_URI"] = config.SQLALCHEMY_DATABASE_URI
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
-db.init_app(app)
-
-svc = DBService()
-socketio = SocketIO(cors_allowed_origins="*", async_mode="threading")
-
-
-# ---------- helpers ----------
-
-def require_admin(fn):  # type: ignore[no-untyped-def]
-    from functools import wraps
-
-    @wraps(fn)
-    def wrapper(*args, **kwargs):  # type: ignore[no-untyped-def]
-        if not session.get("is_admin"):
-            return jsonify({"error": "unauthorized"}), 401
-        return fn(*args, **kwargs)
-
-    return wrapper
-
-
-def current_competition() -> str:
-    return request.args.get("competition") or session.get("competition") or "default"
-
-
-# ---------- auth ----------
-
-@app.post("/api/login")
-def api_login() -> Response:
-    data = request.get_json(silent=True) or {}
-    if data.get("password") == config.ADMIN_PASSWORD:
-        session["is_admin"] = True
-        return jsonify({"ok": True})
-    return jsonify({"ok": False}), 401
-
-
-@app.post("/api/logout")
-def api_logout() -> Response:
-    session.clear()
-    return jsonify({"ok": True})
-
-
-# ---------- участники (п.1, п.2) ----------
-
-@app.get("/api/participants")
-def api_participants() -> Response:
-    q = request.args.get("q", "")
-    items = svc.search_participants(q) if q else Participant.query.order_by(
-        Participant.name).limit(500).all()
-    return jsonify([p.to_dict() for p in items])
-
-
-@app.post("/api/participants")
-@require_admin
-def api_add_participant() -> Response:
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "name required"}), 400
-    year = data.get("birth_year")
-    p = svc.upsert_participant(name, int(year) if year else None,
-                               rank=data.get("rank"), kyu=data.get("kyu"),
-                               sports_school=data.get("sports_school"),
-                               coach=data.get("coach"))
-    return jsonify(p.to_dict()), 201
-
-
-@app.put("/api/participants/<int:pid>")
-@require_admin
-def api_update_participant(pid: int) -> Response:
-    """П.2: правка в реестре автоматически видна во всех активных соревнованиях."""
-    fields = {k: v for k, v in (request.get_json(silent=True) or {}).items()
-              if k in ("name", "birth_year", "rank", "kyu", "sports_school", "coach")}
-    p = svc.update_participant(pid, **fields)
-    if p is None:
-        return jsonify({"error": "not found"}), 404
-    return jsonify(p.to_dict())
-
-
-@app.post("/api/import/participants-csv")
-@require_admin
-def api_import_csv() -> Response:
-    """Импорт старой базы участников из CSV (единственный сценарий CSV)."""
-    f = request.files.get("file")
-    if not f:
-        return jsonify({"error": "file required"}), 400
-    tmp = config.DATA_DIR / "_import_participants.csv"
-    f.save(tmp)
-    with app.app_context():
-        n = import_participants_csv(tmp)
-    tmp.unlink(missing_ok=True)
-    return jsonify({"imported": n})
-
-
-# ---------- судьи (п.6) ----------
-
-@app.get("/api/judges")
-def api_judges() -> Response:
-    return jsonify([j.to_dict() for j in Judge.query.order_by(Judge.name).all()])
-
-
-@app.post("/api/judges")
-@require_admin
-def api_add_judge() -> Response:
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "name required"}), 400
-    j = svc.upsert_judge(name, category=data.get("category"), region=data.get("region"))
-    return jsonify(j.to_dict()), 201
-
-
-@app.put("/api/judges/<int:jid>")
-@require_admin
-def api_update_judge(jid: int) -> Response:
-    fields = {k: v for k, v in (request.get_json(silent=True) or {}).items()
-              if k in ("name", "category", "region")}
-    j = svc.update_judge(jid, **fields)
-    if j is None:
-        return jsonify({"error": "not found"}), 404
-    return jsonify(j.to_dict())
-
-
-# ---------- соревнование: meta на горячую (п.3, п.11) ----------
-
-@app.get("/api/competition/meta")
-def api_get_meta() -> Response:
-    comp = current_competition()
-    meta = svc.get_competition_meta(comp)
-    meta.setdefault("title", config.DEFAULT_COMPETITION_TITLE)
-    return jsonify(meta)
-
-
-@app.post("/api/competition/meta")
-@require_admin
-def api_set_meta() -> Response:
-    comp = current_competition()
-    data = request.get_json(silent=True) or {}
-    svc.set_competition_meta(
-        comp, title=data.get("title"), date=data.get("date"),
-        location=data.get("location"), subtitle=data.get("subtitle"))
-    socketio.emit("meta_updated", {"competition": comp},
-                  room=f"tablo:{comp}")
-    return jsonify({"ok": True})
-
-
-@app.post("/api/competition/finish")
-@require_admin
-def api_finish() -> Response:
-    """Заморозка данных: дальнейшие правки реестра не влияют на комп."""
-    ok = svc.finish_competition(current_competition())
-    return jsonify({"ok": ok}), (200 if ok else 404)
-
-
-# ---------- пары и жеребьёвка (п.8) ----------
-
-@app.get("/api/pairs")
-def api_pairs() -> Response:
-    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
-    stage = request.args.get("stage", "qual")
-    return jsonify(svc.get_effective_pairs(comp, kata, stage))
-
-
-@app.post("/api/pairs")
-@require_admin
-def api_save_pairs() -> Response:
-    if not request.is_json:
-        return jsonify({"error": "json required"}), 415
-    comp, kata = current_competition(), _norm_kata(request.json.get("kata", ""))
-    stage = request.json.get("stage", "qual")
-    disc = svc.get_or_create_discipline(comp, kata,
-                                        techniques_count=request.json.get(
-                                            "techniques_count", 10))
-    svc.save_pairs(disc.id, stage, request.json.get("pairs", []))
-    socketio.emit("pairs_updated", {"kata": kata, "stage": stage},
-                  room=f"tablo:{comp}:{kata}:{stage}")
-    return jsonify({"ok": True})
-
-
-@app.post("/api/pairs/draw")
-@require_admin
-def api_draw() -> Response:
-    """П.8: жеребьёвка порядка выступления."""
-    comp, kata = current_competition(), _norm_kata(request.json.get("kata", ""))
-    stage = request.json.get("stage", "qual")
-    disc = svc.get_or_create_discipline(comp, kata)
-    order = svc.draw_start_order(disc.id, stage)
-    socketio.emit("pairs_updated", {"kata": kata, "stage": stage},
-                  room=f"tablo:{comp}:{kata}:{stage}")
-    return jsonify({"order": order})
-
-
-# ---------- судейские списки ----------
-
-@app.get("/api/judge-list")
-def api_judge_list() -> Response:
-    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
-    return jsonify(svc.get_effective_judges(comp, kata,
-                                            request.args.get("stage", "qual")))
-
-
-@app.post("/api/judge-list")
-@require_admin
-def api_save_judge_list() -> Response:
-    data = request.get_json(silent=True) or {}
-    comp, kata = current_competition(), data.get("kata", "")
-    stage = data.get("stage", "qual")
-    disc = svc.get_or_create_discipline(comp, kata)
-    svc.save_judge_list(disc.id, stage, data.get("judges", []))
-    return jsonify({"ok": True})
-
-
-# ---------- оценки + realtime (п.5, п.7, п.9) ----------
-
-@app.post("/api/score")
-def api_save_score() -> Response:
-    """Сохранение оценки судьи; пуш leaderboard всем подключённым табло."""
-    data = request.get_json(silent=True) or {}
-    comp = data.get("competition") or current_competition()
-    kata = _norm_kata(data.get("kata", ""))
-    stage = data.get("stage", "qual")
-    judge_name = (data.get("judge_name") or "").strip()
-    pair_number = int(data.get("pair_number", 0) or 0)
-    if not judge_name or pair_number <= 0 or not kata:
-        return jsonify({"error": "judge_name, pair_number, kata required"}), 400
-    total = svc.save_judge_score(comp, kata, stage, judge_name, pair_number,
-                                 data.get("techniques_raw", {}))
-    board = svc.build_leaderboard(comp, kata, stage)
-    socketio.emit("leaderboard", {"rows": board},
-                  room=f"tablo:{comp}:{kata}:{stage}")
-    return jsonify({"ok": True, "total": total})
-
-
-@app.get("/api/leaderboard")
-def api_leaderboard() -> Response:
-    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
-    stage = request.args.get("stage", "qual")
-    return jsonify({
-        "rows": svc.build_leaderboard(comp, kata, stage),
-        "meta": svc.get_competition_meta(comp),
-    })
-
-
-# ---------- экспорт протоколов (скачивание из браузера) ----------
-
-@app.get("/api/export/protocol.csv")
-def api_export_csv() -> Response:
-    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
-    rows = svc.export_protocol_rows(comp, kata, request.args.get("stage", "qual"))
-    buf = io.StringIO()
-    if rows:
-        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()),
-                                delimiter=";", lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(rows)
-    return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition":
-                             f"attachment; filename=protocol_{kata}.csv"})
-
-
-@app.get("/api/export/protocol.xlsx")
-def api_export_xlsx() -> Response:
-    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
-    rows = svc.export_protocol_rows(comp, kata, request.args.get("stage", "qual"))
-    try:
-        from openpyxl import Workbook
-    except ImportError:
-        return jsonify({"error": "openpyxl not installed"}), 500
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Protocol"
-    if rows:
-        headers = list(rows[0].keys())
-        ws.append(headers)
-        for r in rows:
-            ws.append([r[h] for h in headers])
-    bio = io.BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    return Response(bio.read(),
-                    mimetype="application/vnd.openxmlformats-officedocument."
-                             "spreadsheetml.sheet",
-                    headers={"Content-Disposition":
-                             f"attachment; filename=protocol_{kata}.xlsx"})
-
-
-@app.get("/api/export/protocol.pdf")
-def api_export_pdf() -> Response:
-    comp, kata = current_competition(), _norm_kata(request.args.get("kata", ""))
-    stage = request.args.get("stage", "qual")
-    rows = svc.export_protocol_rows(comp, kata, stage)
-    meta = svc.get_competition_meta(comp)
-    try:
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-        from reportlab.lib.styles import getSampleStyleSheet
-        from reportlab.lib import colors
-    except ImportError:
-        return jsonify({"error": "reportlab not installed"}), 500
-    bio = io.BytesIO()
-    doc = SimpleDocTemplate(bio, pagesize=landscape(A4))
-    styles = getSampleStyleSheet()
-    title = meta.get("title") or config.DEFAULT_COMPETITION_TITLE
-    elems = [Paragraph(title, styles["Title"]),
-             Paragraph(f"{meta.get('subtitle') or ''} — {kata} ({stage})",
-                       styles["Normal"]),
-             Spacer(1, 12)]
-    if rows:
-        headers = list(rows[0].keys())
-        table_data = [headers] + [[str(r[h]) for h in headers] for r in rows]
-        t = Table(table_data)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-            ("FONTSIZE", (0, 0), (-1, -1), 7),
-        ]))
-        elems.append(t)
-    doc.build(elems)
-    bio.seek(0)
-    return Response(bio.read(), mimetype="application/pdf",
-                    headers={"Content-Disposition":
-                             f"attachment; filename=protocol_{kata}.pdf"})
-
-
-# ---------- SocketIO ----------
-
-@socketio.on("subscribe_tablo")
-def on_subscribe(payload: dict) -> None:
-    from flask_socketio import join_room
-
-    comp = (payload.get("comp_name") or payload.get("competition")
-            or current_competition())
-    kata = _norm_kata(payload.get("kata") or payload.get("discipline_key") or "")
-    stage = payload.get("stage", "qual")
-    join_room(f"tablo:{comp}:{kata}:{stage}")
-    join_room(f"tablo:{comp}")
-    emit_board(comp, kata, stage)
-
-
-@socketio.on("join_tablo")
-def on_join_tablo(payload: dict) -> None:
-    """main_tablo_dynamic.html: подписка на все табло соревнования."""
-    from flask_socketio import join_room
-
-    comp = payload.get("comp_name") or current_competition()
-    join_room(f"tablo:{comp}")
-    meta = svc.get_competition_meta(comp)
-    kata = _norm_kata(meta.get("main_tablo_discipline") or "")
-    stage = meta.get("current_stage", "qual")
-    if kata:
-        socketio.emit("tablo_update", {"comp_name": comp,
-                                       "discipline_key": kata},
-                      room=f"tablo:{comp}")
-
-
-@socketio.on("leave_tablo")
-def on_leave_tablo(payload: dict) -> None:
-    from flask_socketio import leave_room
-
-    comp = payload.get("comp_name") or current_competition()
-    leave_room(f"tablo:{comp}")
-
-
-def emit_board(comp: str, kata: str, stage: str) -> None:
-    """Realtime-пуш табло (п.7): обновляет и вкладку табло дисциплины,
-    и главное табло без перезагрузки страницы."""
-    board = svc.build_leaderboard(comp, kata, stage)
-    judges = svc.get_effective_judges(comp, kata, stage)
-    rows = []
-    for r in board:
-        per_judge = svc.list_judge_scores(comp, kata, stage, "",
-                                          r["pair_number"])
-        score_map = {j["name"]: j["total"] for j in per_judge}
-        rows.append({
-            "place": r["place"], "pair_number": r["pair_number"],
-            "tori_cell": {"name": r["tori"].get("name", ""), "detail": None},
-            "uke_cell": {"name": r["uke"].get("name", ""), "detail": None},
-            "judge_scores": [score_map.get(j["name"]) for j in judges],
-            "final_score": r["final_score"],
-        })
-    payload = {"comp_name": comp, "kata": kata, "stage": stage,
-               "rows": rows, "judges": judges,
-               "meta": svc.get_competition_meta(comp)}
-    socketio.emit("leaderboard", payload,
-                  room=f"tablo:{comp}:{kata}:{stage}")
-    socketio.emit("leaderboard", payload, room=f"tablo:{comp}")
-    socketio.emit("tablo_update", {"comp_name": comp, "discipline_key": kata},
-                  room=f"tablo:{comp}")
-
-
-# ---------- HTML-страницы (шаблоны взяты из репозитория) ----------
-
-def _kata_display(kata_key: str) -> str:
-    norm = lambda s: s.lower().replace(" ", "").replace("-", "").replace("_", "")
-    for name in technics.Technics:
-        if norm(name) == norm(kata_key):
-            return name
-    return kata_key or ""
-
-
-def _norm_kata(kata_key: str) -> str:
-    """Приведение ключа ката к каноническому виду technics._disc_key."""
-    norm = lambda s: s.lower().replace(" ", "").replace("-", "").replace("_", "")
-    for key in technics.DISCIPLINE_ROWS_BY_KEY:
-        if norm(key) == norm(kata_key):
-            return key
-    return (kata_key or "").lower()
-
-
-@app.get("/")
-def index() -> Response:
-    return redirect(url_for("main_tablo"))
-
-
-@app.get("/login")
-def admin_login() -> Response:
-    return render_template("login.html")
-
-
-@app.post("/login")
-def admin_login_post() -> Response:
-    password = request.form.get("password", "")
-    if password == config.ADMIN_PASSWORD:
-        session["is_admin"] = True
-        return redirect(url_for("admin_dashboard"))
-    return render_template("login.html", message="Неверный пароль"), 401
-
-
-@app.get("/logout")
-def admin_logout() -> Response:
-    session.clear()
-    return redirect(url_for("admin_login"))
-
-
-@app.get("/admin")
-@app.get("/admin/dashboard")
-@app.get("/dashboard/admin")
-def admin_dashboard() -> Response:
-    if not session.get("is_admin"):
-        return redirect(url_for("admin_login"))
-    competitions = svc.get_all_competitions()
-    # шаблоны ожидают список имён папок (url_for('edit_competition', comp_name=comp))
-    names = [c.get("name", "") for c in competitions]
-    return render_template("admin_dashboard.html", competitions=names)
-
-
-@app.get("/config")
-@app.get("/admin/config")
-@app.get("/competition/config")
-@app.route("/config/competition", endpoint="config_competition")
-def config_page() -> Response:
-    if not session.get("is_admin"):
-        return redirect(url_for("admin_login"))
-    comp = current_competition()
-    meta = svc.get_competition_meta(comp)
-    meta.setdefault("name", meta.get("title") or config.DEFAULT_COMPETITION_TITLE)
-    meta.setdefault("status", "open")
-    meta.setdefault("created", meta.get("date") or "")
-    disciplines = []
-    for key, rows in technics.DISCIPLINE_ROWS_BY_KEY.items():
-        disciplines.append({
-            "key": key, "name": _kata_display(key),
-            "pair_count": len(svc.get_effective_pairs(comp, key, "qual")),
-            "stage": {"mode": "qual", "status": "open", "final_top_n": 3},
-            "stage_label": "Квалификация",
-        })
-    return render_template("config.html", config=meta, disciplines=disciplines,
-                           default_path=str(config.COMPETITIONS_DIR))
-
-
-@app.post("/config")
-@app.post("/admin/config")
-@app.post("/competition/config")
-@app.route("/config/competition", methods=["POST"], endpoint="config_competition_post")
-def config_page_post() -> Response:
-    if not session.get("is_admin"):
-        return redirect(url_for("admin_login"))
-    name = (request.form.get("comp_name") or "").strip()
-    if not name:
-        return redirect(url_for("config_competition"))
-    folder = re.sub(r"[^\w\-]+", "_", name)[:80]
-    comp = svc.get_or_create_competition(folder)
-    svc.set_competition_meta(folder, title=name)
-    return redirect(url_for("edit_competition", comp_name=folder))
-
-
-@app.get("/admin/<comp_name>")
-@app.get("/admin/competition/<comp_name>")
-def edit_competition(comp_name: str) -> Response:
-    """Страница редактирования соревнования (данные — из БД)."""
-    if not session.get("is_admin"):
-        return redirect(url_for("admin_login"))
-    comp = svc.get_or_create_competition(comp_name)
-    meta = svc.get_competition_meta(comp_name)
-    stage_cfg = meta.get("stage", {}) if isinstance(meta.get("stage"), dict) else {}
-    current_stage = meta.get("current_stage", "qual")
-    config_ctx = {
-        "name": meta.get("title") or comp_name,
-        "display_name": meta.get("title") or comp_name,
-        "status": meta.get("status", "open"),
-        "main_tablo_discipline": meta.get("main_tablo_discipline") or "",
-        "created": meta.get("date") or meta.get("created") or "",
-        "banner": meta.get("subtitle") or "",
+# app.py
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+from flask_socketio import SocketIO, emit, join_room, leave_room
+import os
+from datetime import datetime
+from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer
+from scoring import calculate_pair_final_score
+import json
+
+# Импортируем DISCIPLINE_ROWS_BY_KEY из technics.py
+from technics import DISCIPLINE_ROWS_BY_KEY
+from generate_protocols import generate_competition_protocols, protocol_readiness
+
+# Функция для получения красивого названия дисциплины
+def get_discipline_display_name(key):
+    """Получает красивое название дисциплины"""
+    display_names = {
+        'nagenokata': 'Nage-no-kata',
+        'katamenokata': 'Katame-no-kata',
+        'kimenokata': 'Kime-no-kata',
+        'junokata': 'Ju-no-kata',
+        'kodokangoshinjutsu': 'Kodokan Goshin-jutsu',
+        'koshikinokata': 'Koshiki-no-kata',
+        'itsutsunokata': 'Itsutsu-no-kata',
     }
-    disciplines = []
-    for d in Discipline.query.filter_by(competition_id=comp.id).all():
-        stage = {
-            "mode": stage_cfg.get("mode", current_stage),
-            "status": stage_cfg.get("status", "open"),
-            "final_top_n": int(stage_cfg.get("final_top_n",
-                                             meta.get("final_top_n", 3)) or 3),
-            "current_stage": current_stage,
-        }
-        pair_count = len(svc.get_effective_pairs(comp_name, d.kata_key, "qual"))
-        disciplines.append({
-            "key": d.kata_key, "name": d.display_name or _kata_display(d.kata_key),
-            "pair_count": pair_count,
-            "stage": stage,
-            "stage_label": "Финал" if current_stage == "final" else "Квалификация",
-        })
-    available = [{"key": k, "name": _kata_display(k)}
-                 for k in technics.DISCIPLINE_ROWS_BY_KEY]
-    final_rows = svc.build_leaderboard(comp_name, "", "final") if disciplines else []
-    disc_ids = {d["key"]: Discipline.query.filter_by(
-        competition_id=comp.id, kata_key=d["key"]).first() for d in disciplines}
-    protocol_status = {"overall_ready": any(
-        r.get("final_score") for r in final_rows),
-        "disciplines": [
-        {"key": d["key"], "name": d["name"],
-         "pairs_registered": d["pair_count"],
-         "final_with_total": sum(1 for r in final_rows if r.get("final_score")),
-         "judge_protocol_files": (JudgeScore.query.filter_by(
-             discipline_id=disc_ids[d["key"]].id).count()
-             if disc_ids.get(d["key"]) is not None else 0),
-         "ready": d["pair_count"] > 0}
-        for d in disciplines]}
-    return render_template("edit_competition.html",
-                           comp_name=comp_name, config=config_ctx,
-                           disciplines=disciplines,
-                           available_disciplines=available,
-                           protocol_status=protocol_status)
+    return display_names.get(key.lower(), key)
 
 
-@app.get("/data-editor")
-def data_editor() -> Response:
-    return render_template("data_editor.html")
+MONTHS_RU = {
+    1: 'января', 2: 'февраля', 3: 'марта', 4: 'апреля',
+    5: 'мая', 6: 'июня', 7: 'июля', 8: 'августа',
+    9: 'сентября', 10: 'октября', 11: 'ноября', 12: 'декабря',
+}
 
 
-@app.get("/tablo")
-@app.get("/tablo/<comp_name>/<kata_key>")
-@app.get("/tablo/<comp_name>/<kata_key>/<stage>")
-def tablo(comp_name: str | None = None, kata_key: str = "",
-          stage: str = "qual") -> Response:
-    comp = comp_name or current_competition()
-    kata_key = _norm_kata(kata_key)
-    meta = svc.get_competition_meta(comp)
+def format_date_ru(dt: datetime) -> str:
+    return f"{dt.day} {MONTHS_RU.get(dt.month, '')} {dt.year} г."
+
+
+def _stage_config_path(comp_path: str, kata_key: str) -> str:
+    return os.path.join(comp_path, kata_key, 'stage.json')
+
+
+def ensure_stage_config(comp_path: str, kata_key: str) -> dict:
+    disc_path = os.path.join(comp_path, kata_key)
+    os.makedirs(disc_path, exist_ok=True)
+    cfg_path = _stage_config_path(comp_path, kata_key)
     cfg = {
-        "name": meta.get("title") or config.DEFAULT_COMPETITION_TITLE,
-        "display_name": meta.get("title") or config.DEFAULT_COMPETITION_TITLE,
-        "banner": meta.get("subtitle") or "",
-        "main_tablo_discipline": meta.get("main_tablo_discipline") or kata_key,
+        'mode': 'final_only',
+        'current_stage': 'final',
+        'status': 'open',
+        'final_top_n': 3,
     }
-    kata = kata_key or cfg["main_tablo_discipline"] or ""
-    judges = svc.get_effective_judges(comp, kata, stage)
-    board = svc.build_leaderboard(comp, kata, stage)
-    results = []
-    for r in board:
-        per_judge = svc.list_judge_scores(comp, kata, stage, "", r["pair_number"])
-        score_map = {j["name"]: j["total"] for j in per_judge}
-        results.append({
-            "place": r["place"], "pair_number": r["pair_number"],
-            "tori_cell": {"name": r["tori"].get("name", ""), "detail": None},
-            "uke_cell": {"name": r["uke"].get("name", ""), "detail": None},
-            "judge_scores": [score_map.get(j["name"]) for j in judges],
-            "final_score": r["final_score"],
-        })
-    return render_template("tablo.html", comp_name=comp, kata_key=kata,
-                           stage=stage, config=cfg, judges=judges,
-                           results=results, display_date=meta.get("date") or "")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            cfg.update(loaded or {})
+        except Exception:
+            pass
+    # Ensure stage files exist:
+    # prelim -> root discipline files; final -> subfolder final/
+    CompetitionCSVManager.create_discipline_structure(comp_path, kata_key)
+    disc_path = os.path.join(comp_path, kata_key)
+    CSVManager.ensure_csv_exists(os.path.join(disc_path, 'participants_list.csv'), CompetitionCSVManager.PAIRS_HEADERS)
+    CSVManager.ensure_csv_exists(os.path.join(disc_path, 'final_protocol.csv'), CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+    final_dir = os.path.join(disc_path, 'final')
+    os.makedirs(os.path.join(final_dir, 'protocols'), exist_ok=True)
+    CSVManager.ensure_csv_exists(os.path.join(final_dir, 'participants_list.csv'), CompetitionCSVManager.PAIRS_HEADERS)
+    CSVManager.ensure_csv_exists(os.path.join(final_dir, 'final_protocol.csv'), CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+
+    # <=3 пар -> только прямой финал
+    try:
+        root_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
+        if len(root_pairs) <= 3 and len(root_pairs) > 0:
+            cfg['mode'] = 'final_only'
+            cfg['current_stage'] = 'final'
+    except Exception:
+        pass
+    with open(cfg_path, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    return cfg
 
 
-@app.get("/main-tablo")
-@app.get("/main_tablo")
-def main_tablo() -> Response:
-    comp = current_competition()
-    meta = svc.get_competition_meta(comp)
-    kata = meta.get("main_tablo_discipline") or ""
-    stage = meta.get("current_stage", "qual")
-    judges = svc.get_effective_judges(comp, kata, stage)
-    board = svc.build_leaderboard(comp, kata, stage)
-    results = []
-    for r in board:
-        per_judge = svc.list_judge_scores(comp, kata, stage, "", r["pair_number"])
-        score_map = {j["name"]: j["total"] for j in per_judge}
-        results.append({
-            "place": r["place"], "pair_number": r["pair_number"],
-            "tori_cell": {"name": r["tori"].get("name", ""), "detail": None},
-            "uke_cell": {"name": r["uke"].get("name", ""), "detail": None},
-            "judge_scores": [score_map.get(j["name"]) for j in judges],
-            "final_score": r["final_score"],
-        })
-    cfg = {"name": meta.get("title") or config.DEFAULT_COMPETITION_TITLE,
-           "banner": meta.get("subtitle") or "",
-           "main_tablo_discipline": kata}
-    return render_template("main_tablo_dynamic.html", config=cfg,
-                           comp_name=comp, kata_key=kata, stage=stage,
-                           judges=judges, results=results)
+def stage_for_ops(comp_path: str, kata_key: str) -> str:
+    cfg = ensure_stage_config(comp_path, kata_key)
+    return 'final' if cfg.get('current_stage') == 'final' else 'prelim'
 
 
-@app.get("/dashboard")
-@app.get("/public")
-def public_dashboard() -> Response:
-    comps = []
-    for c in svc.get_all_competitions():
-        folder = c.get("folder_name") or c.get("name", "")
-        ds = Discipline.query.filter_by(competition_id=c.get("id")).all() \
-            if c.get("id") else []
-        comps.append({**c, "disciplines": [
-            {"key": d.kata_key, "name": d.display_name or _kata_display(d.kata_key)}
-            for d in ds]})
-    return render_template("public_dashboard.html", competitions=comps)
+def get_stage_files(comp_path: str, kata_key: str, stage: str) -> dict:
+    disc_path = os.path.join(comp_path, kata_key)
+    is_final = str(stage).lower() == 'final'
+    if is_final:
+        base = os.path.join(disc_path, 'final')
+    else:
+        base = disc_path
+    return {
+        'participants': os.path.join(base, 'participants_list.csv'),
+        'final_protocol': os.path.join(base, 'final_protocol.csv'),
+    }
 
 
-@app.get("/registration/<comp_name>/<kata_key>")
-def register_participants(comp_name: str, kata_key: str) -> Response:
-    kata_key = _norm_kata(kata_key)
-    pairs = svc.get_effective_pairs(comp_name, kata_key,
-                                    request.args.get("stage", "qual"))
-    return render_template("registration.html", comp_name=comp_name,
-                           kata_key=kata_key, pairs=pairs,
-                           disciplines=list(technics.DISCIPLINE_ROWS_BY_KEY))
+def judge_positions_meta(judges: list) -> dict:
+    positions = []
+    for j in judges:
+        try:
+            p = int(str(j.get('место', '')).strip())
+            if p > 0:
+                positions.append(p)
+        except Exception:
+            continue
+    unique_positions = sorted(set(positions))
+    n = len(unique_positions)
+    if n < 3:
+        return {'valid': False, 'error': 'Минимум 3 судьи', 'positions': [], 'effective_positions': [], 'effective_count': 0}
+    eff = unique_positions[:5]
+    return {'valid': True, 'error': '', 'positions': unique_positions, 'effective_positions': eff, 'effective_count': len(eff)}
 
 
-@app.get("/judge/<comp_name>/<kata_key>/<judge_name>")
-@app.get("/judge/<comp_name>/<kata_key>/<judge_name>/<position>")
-def judge_page(comp_name: str, kata_key: str, judge_name: str,
-               position: str = "1") -> Response:
-    kata_key = _norm_kata(kata_key)
-    stage = request.args.get("stage", "qual")
-    disc = None
-    comp = Competition.query.filter_by(folder_name=comp_name).first()
-    if comp is not None:
-        disc = Discipline.query.filter_by(competition_id=comp.id,
-                                          kata_key=kata_key).first()
-    techniques = list(technics.DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
-    if disc is not None and disc.techniques_count:
-        techniques = techniques[:disc.techniques_count]
-    pairs = svc.get_effective_pairs(comp_name, kata_key, stage)
-    judges = svc.get_effective_judges(comp_name, kata_key, stage)
-    return render_template("judge_form.html", comp_name=comp_name,
-                           kata_key=kata_key, judge=judge_name,
-                           judge_name=judge_name, stage=stage,
-                           techniques=techniques, pairs=pairs, judges=judges,
-                           judge_positions=[1, 2, 3, 4, 5, 6, 7],
-                           stage_error=None)
+def _compute_final_from_entry(pair_entry: dict, effective_positions: list) -> float:
+    scores = []
+    for p in effective_positions:
+        if p < 1 or p > 5:
+            continue
+        s = pair_entry.get(f'Судья {p}', '')
+        if s in (None, ''):
+            return None
+        try:
+            scores.append(float(s))
+        except ValueError:
+            return None
+    return calculate_pair_final_score(scores, judge_count=len(effective_positions))
 
 
-@app.get("/results/<comp_name>/<kata_key>")
-def results_page(comp_name: str, kata_key: str) -> Response:
-    kata_key = _norm_kata(kata_key)
-    stage = request.args.get("stage", "qual")
-    board = svc.build_leaderboard(comp_name, kata_key, stage)
-    judges = svc.get_effective_judges(comp_name, kata_key, stage)
-    results = []
-    for r in board:
-        per_judge = svc.list_judge_scores(comp_name, kata_key, stage, "",
-                                          r["pair_number"])
-        score_map = {j["name"]: j["total"] for j in per_judge}
-        results.append({
-            "place": r["place"], "pair_number": r["pair_number"],
-            "scores": [score_map.get(j["name"]) for j in judges],
-            "final_score": r["final_score"],
-            "pair": {"tori": r["tori"], "uke": r["uke"]},
-        })
-    return render_template("results.html", results=results, judges=judges,
-                           comp_name=comp_name, kata_key=kata_key)
+def _participant_detail_line(pair_row: dict, prefix: str) -> str:
+    """prefix: 'Тори_' или 'Уке_'"""
+    parts = [
+        pair_row.get(f'{prefix}год рождения', '').strip(),
+        pair_row.get(f'{prefix}разряд', '').strip(),
+        pair_row.get(f'{prefix}кю', '').strip(),
+        pair_row.get(f'{prefix}СШ', '').strip(),
+        pair_row.get(f'{prefix}тренер', '').strip(),
+    ]
+    return ', '.join(p for p in parts if p)
 
 
-# ---------- админские JSON-действия для шаблонов ----------
+def encode_participant_for_protocol(pair_row: dict, role: str) -> str:
+    """role: 'Тори' или 'Уке'. В CSV: Имя||остальное через запятую"""
+    prefix = f'{role}_'
+    name = pair_row.get(f'{prefix}ФИО', '').strip()
+    detail = _participant_detail_line(pair_row, prefix)
+    if detail:
+        return f'{name}||{detail}'
+    return name
 
-def _reload_board(comp: str, kata: str, stage: str) -> None:
-    socketio.emit("leaderboard", {"rows": svc.build_leaderboard(comp, kata, stage)},
-                  room=f"tablo:{comp}:{kata}:{stage}")
+
+def decode_participant_cell(cell_value) -> dict:
+    if cell_value is None:
+        return {'name': '', 'detail': ''}
+    s = str(cell_value).strip()
+    if '||' in s:
+        name, _, rest = s.partition('||')
+        return {'name': name.strip(), 'detail': rest.strip()}
+    return {'name': s, 'detail': ''}
 
 
-@app.post("/admin/create")
-@require_admin
-def api_create_competition() -> Response:
+def enrich_result_row_cells(result: dict, pair_row: dict = None) -> None:
+    if pair_row:
+        result['tori_cell'] = {
+            'name': pair_row.get('Тори_ФИО', '').strip(),
+            'detail': _participant_detail_line(pair_row, 'Тори_'),
+        }
+        result['uke_cell'] = {
+            'name': pair_row.get('Уке_ФИО', '').strip(),
+            'detail': _participant_detail_line(pair_row, 'Уке_'),
+        }
+    else:
+        result['tori_cell'] = decode_participant_cell(result.get('tori', ''))
+        result['uke_cell'] = decode_participant_cell(result.get('uke', ''))
+
+
+def judge_score_cell_style(score) -> dict:
+    if score is None:
+        return {'background': 'transparent', 'color': 'inherit'}
+    try:
+        v = float(score)
+    except (TypeError, ValueError):
+        return {'background': 'transparent', 'color': 'inherit'}
+    t = max(0.0, min(1.0, v / 170.0))
+    r = int(round(255 * (1 - t)))
+    g = int(round(255 * t))
+    b = 32
+    lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+    fg = '#0b1320' if lum > 0.62 else '#f8fafc'
+    return {'background': f'rgb({r},{g},{b})', 'color': fg}
+
+
+def tablo_sort_and_assign_places(results: list) -> list:
+    """Места только у пар с полной суммой; сортировка: по месту (лучшие выше), без месты — по номеру пары."""
+    ranked = [r for r in results if r.get('final_score') is not None]
+    unranked = [r for r in results if r.get('final_score') is None]
+    ranked.sort(key=lambda x: (-x['final_score'], x['pair_number']))
+    for i, r in enumerate(ranked):
+        r['place'] = i + 1
+    for r in unranked:
+        r['place'] = None
+    unranked.sort(key=lambda x: x['pair_number'])
+    return ranked + unranked
+
+
+def prepare_tablo_results(results: list, pairs: list) -> list:
+    pairs_by_num = {int(p.get('номер пары', 0)): p for p in pairs}
+    out = tablo_sort_and_assign_places(results)
+    for r in out:
+        pr = pairs_by_num.get(r['pair_number'])
+        enrich_result_row_cells(r, pr)
+        r['judge_cell_styles'] = [judge_score_cell_style(s) for s in r.get('judge_scores', [])]
+    return out
+
+
+app = Flask(__name__, static_folder='static', static_url_path='/static')
+app.config['SECRET_KEY'] = 'your_secret_key_here_change_in_production'
+app.config['SESSION_COOKIE_SECURE'] = False
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+
+# Инициализация SocketIO
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    manage_session=False,
+    async_mode='threading',
+    logger=True,
+    engineio_logger=True
+)
+
+# Глобальные пути
+GLOBAL_DATA_DIR = os.path.dirname(__file__)
+PARTICIPANTS_CSV = os.path.join(GLOBAL_DATA_DIR, 'participants.csv')
+JUDGES_CSV = os.path.join(GLOBAL_DATA_DIR, 'judges.csv')
+COMPETITIONS_BASE_DIR = os.path.join(GLOBAL_DATA_DIR, 'competitions')
+
+# Инициализация глобальных CSV файлов
+CSVManager.ensure_csv_exists(PARTICIPANTS_CSV, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+CSVManager.ensure_csv_exists(JUDGES_CSV, CompetitionCSVManager.JUDGES_HEADERS)
+os.makedirs(COMPETITIONS_BASE_DIR, exist_ok=True)
+
+# Простая аутентификация для админки
+ADMIN_PASSWORD = 'admin123'
+
+
+# ==================== СТАТИЧЕСКИЕ ФАЙЛЫ ====================
+
+@app.route('/competitions/<path:filename>')
+def serve_competition_files(filename):
+    """Служить файлы из папки competitions"""
+    filepath = os.path.join(COMPETITIONS_BASE_DIR, filename)
+    # Проверяем, что путь находится внутри COMPETITIONS_BASE_DIR
+    if os.path.abspath(filepath).startswith(os.path.abspath(COMPETITIONS_BASE_DIR)):
+        if os.path.exists(filepath):
+            from flask import send_file
+            return send_file(filepath)
+    return redirect(url_for('public_dashboard'))
+
+
+# ==================== АДМИНИСТРАТИВНАЯ ПАНЕЛЬ ====================
+
+@app.route('/')
+def index():
+    """Главная страница"""
+    if session.get('admin'):
+        return redirect(url_for('admin_dashboard'))
+    return redirect(url_for('public_dashboard'))
+
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    """Вход в административную панель"""
+    if request.method == 'POST':
+        password = request.form['password']
+        if password == ADMIN_PASSWORD:
+            session['admin'] = True
+            return redirect(url_for('admin_dashboard'))
+        else:
+            flash('Неверный пароль', 'danger')
+    return render_template('login.html')
+
+
+@app.route('/admin/logout')
+def admin_logout():
+    """Выход из административной панели"""
+    session.pop('admin', None)
+    return redirect(url_for('public_dashboard'))
+
+
+@app.route('/dashboard/admin')
+def admin_dashboard():
+    """Главная панель администратора"""
+    if not session.get('admin'):
+        return redirect(url_for('admin_login'))
+    
+    # Получаем список соревнований
+    competitions = []
+    if os.path.exists(COMPETITIONS_BASE_DIR):
+        for comp_folder in os.listdir(COMPETITIONS_BASE_DIR):
+            comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_folder)
+            if os.path.isdir(comp_path):
+                competitions.append(comp_folder)
+    
+    competitions.sort(reverse=True)
+    return render_template('admin_dashboard.html', competitions=competitions)
+
+
+@app.route('/config', methods=['GET', 'POST'])
+def config_competition():
+    """Создание нового соревнования"""
+    if not session.get('admin'):
+        return redirect(url_for('admin_login'))
+    
+    if request.method == 'POST':
+        comp_name = request.form.get('comp_name', '').strip()
+        comp_path = request.form.get('comp_path', COMPETITIONS_BASE_DIR).strip()
+        
+        if not comp_name:
+            flash('Укажите название соревнования', 'danger')
+            return render_template('config.html', default_path=COMPETITIONS_BASE_DIR)
+        
+        # Нормализуем путь для Windows и Linux
+        comp_path = comp_path.replace('\\', os.sep).replace('/', os.sep)
+
+        # Проверяем доступ к директории
+        if not os.path.isdir(comp_path) or not os.access(comp_path, os.W_OK):
+            comp_path = COMPETITIONS_BASE_DIR
+        
+        # Создаем папку соревнования
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        comp_folder_name = f"{comp_name}_{timestamp}"
+        comp_full_path = os.path.join(comp_path, comp_folder_name)
+        
+        try:
+            os.makedirs(comp_full_path, exist_ok=True)
+            
+            # Создаем файл config.json с информацией
+            config = {
+                'name': comp_name,
+                'created': datetime.now().isoformat(),
+                'status': 'open',
+                'disciplines': [],
+                'banner': ''
+            }
+            with open(os.path.join(comp_full_path, 'config.json'), 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            
+            flash(f'Соревнование "{comp_name}" создано', 'success')
+            return redirect(url_for('edit_competition', comp_name=comp_folder_name))
+        except Exception as e:
+            flash(f'Ошибка при создании соревнования: {str(e)}', 'danger')
+    
+    return render_template('config.html', default_path=COMPETITIONS_BASE_DIR)
+
+
+@app.route('/admin/<comp_name>')
+def edit_competition(comp_name):
+    """Редактор соревнования"""
+    if not session.get('admin'):
+        return redirect(url_for('admin_login'))
+    
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        flash('Соревнование не найдено', 'danger')
+        return redirect(url_for('admin_dashboard'))
+    
+    # Читаем конфиг для красивого названия
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    comp_display_name = config.get('name', comp_name)
+    
+    # Получаем список дисциплин
+    disciplines = []
+    for folder in os.listdir(comp_path):
+        folder_path = os.path.join(comp_path, folder)
+        if os.path.isdir(folder_path) and folder not in ('__pycache__', 'results'):
+            # Получаем количество пар
+            pairs_file = os.path.join(folder_path, 'participants_list.csv')
+            pair_count = 0
+            if os.path.exists(pairs_file):
+                with open(pairs_file, 'r', encoding='utf-8') as f:
+                    pair_count = len(f.readlines()) - 1  # минус заголовок
+            
+            disciplines.append({
+                'key': folder,
+                'name': get_discipline_display_name(folder),
+                'pair_count': pair_count,
+                'stage': ensure_stage_config(comp_path, folder),
+            })
+    
+    # Получаем все доступные дисциплины
+    all_disciplines = list(DISCIPLINE_ROWS_BY_KEY.keys())
+    existing_disciplines = [d['key'] for d in disciplines]
+    available_disciplines = [{'key': d, 'name': get_discipline_display_name(d)} for d in all_disciplines if d not in existing_disciplines]
+
+    proto_status = protocol_readiness(comp_path)
+
+    return render_template('edit_competition.html',
+                         comp_name=comp_name,
+                         config=config,
+                         disciplines=disciplines,
+                         available_disciplines=available_disciplines,
+                         protocol_status=proto_status)
+
+
+@app.route('/admin/<comp_name>/protocol-status')
+def competition_protocol_status(comp_name):
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    return jsonify(protocol_readiness(comp_path))
+
+
+@app.route('/admin/<comp_name>/generate-protocols', methods=['POST'])
+def competition_generate_protocols(comp_name):
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
+    dk = (data.get('discipline_key') or '').strip() or None
+    if dk:
+        disc_path = os.path.join(comp_path, dk)
+        if not os.path.isdir(disc_path):
+            return jsonify({'error': 'Discipline not found'}), 404
+    result = generate_competition_protocols(
+        comp_path, comp_name, discipline_key=dk, technique_map=DISCIPLINE_ROWS_BY_KEY
+    )
+    if result.get('success'):
+        result['readiness'] = protocol_readiness(comp_path)
+    return jsonify(result)
+
+
+@app.route('/admin/<comp_name>/add-discipline', methods=['POST'])
+def add_discipline(comp_name):
+    """Добавить дисциплину к соревнованию"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    
+    discipline_key = request.json.get('discipline_key', '').strip()
+    if not discipline_key or discipline_key not in DISCIPLINE_ROWS_BY_KEY:
+        return jsonify({'error': 'Invalid discipline'}), 400
+    
+    # Создаем структуру для дисциплины
+    CompetitionCSVManager.create_discipline_structure(comp_path, discipline_key)
+    ensure_stage_config(comp_path, discipline_key)
+    
+    return jsonify({'success': True, 'message': 'Дисциплина добавлена'})
+
+
+@app.route('/admin/<comp_name>/<kata_key>/stage', methods=['POST'])
+def discipline_stage_action(comp_name, kata_key):
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    disc_path = os.path.join(comp_path, kata_key)
+    if not os.path.isdir(disc_path):
+        return jsonify({'error': 'Discipline not found'}), 404
+    cfg = ensure_stage_config(comp_path, kata_key)
+    data = request.get_json(silent=True) or {}
+    action = str(data.get('action', '')).strip()
+    top_n = int(data.get('top_n', cfg.get('final_top_n', 3) or 3))
+    top_n = max(1, min(16, top_n))
+    cfg['final_top_n'] = top_n
+
+    root_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
+    if len(root_pairs) <= 3 and len(root_pairs) > 0:
+        cfg['mode'] = 'final_only'
+        cfg['current_stage'] = 'final'
+        cfg['status'] = 'open'
+        CSVManager.write_csv(
+            os.path.join(disc_path, 'final', 'participants_list.csv'),
+            root_pairs,
+            CompetitionCSVManager.PAIRS_HEADERS,
+        )
+        with open(_stage_config_path(comp_path, kata_key), 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        return jsonify({'success': True, 'stage': cfg, 'message': 'До 3 пар: автоматически прямой финал'})
+
+    if action == 'set_prelim':
+        cfg['mode'] = 'prelim_final'
+        cfg['current_stage'] = 'prelim'
+        cfg['status'] = 'open'
+        # prelim данные уже в корне дисциплины — ничего не переносим
+    elif action == 'set_final_only':
+        cfg['mode'] = 'final_only'
+        cfg['current_stage'] = 'final'
+        cfg['status'] = 'open'
+        master_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
+        CSVManager.write_csv(
+            CompetitionCSVManager.get_stage_participants_path(comp_path, kata_key, 'final'),
+            master_pairs,
+            CompetitionCSVManager.PAIRS_HEADERS,
+        )
+    elif action == 'open_final':
+        prelim_final_path = os.path.join(disc_path, 'final_protocol.csv')
+        prelim_results = CSVManager.read_csv(prelim_final_path)
+        prelim_results = [r for r in prelim_results if str(r.get('Сумма', '')).strip()]
+        prelim_results = sort_prelim_results_for_final_transfer(prelim_results)
+        winners = prelim_results[:top_n]
+        prelim_pairs = CSVManager.read_csv(os.path.join(disc_path, 'participants_list.csv'))
+        by_num = {str(p.get('номер пары', '')).strip(): p for p in prelim_pairs}
+        final_pairs = []
+        for w in winners:
+            p = by_num.get(str(w.get('номер пары', '')).strip())
+            if p:
+                final_pairs.append(p)
+        final_pairs_path = os.path.join(disc_path, 'final', 'participants_list.csv')
+        CSVManager.write_csv(
+            final_pairs_path,
+            final_pairs,
+            CompetitionCSVManager.PAIRS_HEADERS,
+        )
+        cfg['mode'] = 'prelim_final'
+        cfg['current_stage'] = 'final'
+        cfg['status'] = 'open'
+    elif action == 'close_stage':
+        cfg['status'] = 'closed'
+    elif action == 'open_stage':
+        cfg['status'] = 'open'
+    else:
+        return jsonify({'error': 'Unknown action'}), 400
+
+    with open(_stage_config_path(comp_path, kata_key), 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    return jsonify({'success': True, 'stage': cfg})
+
+
+@app.route('/admin/<comp_name>/set-main-tablo', methods=['POST'])
+def set_main_tablo_discipline(comp_name):
+    """Установить дисциплину для главного табло и уведомить всех зрителей через WebSocket"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+
+    discipline_key = request.json.get('discipline_key', '').strip()
+
+    # Читаем конфиг
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+    # Устанавливаем выбранную дисциплину
+    config['main_tablo_discipline'] = discipline_key
+
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+    # Отправляем WebSocket событие всем подключенным клиентам
+    socketio.emit('tablo_update', {
+        'comp_name': comp_name,
+        'discipline_key': discipline_key
+    }, room=f'tablo_{comp_name}')
+
+    return jsonify({'success': True, 'message': 'Дисциплина для главного табло установлена'})
+
+
+@app.route('/admin/<comp_name>/remove-discipline', methods=['POST'])
+def remove_discipline(comp_name):
+    """Удалить дисциплину из соревнования"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    
+    discipline_key = request.json.get('discipline_key', '').strip()
+    disc_path = os.path.join(comp_path, discipline_key)
+    
+    if os.path.isdir(disc_path):
+        import shutil
+        shutil.rmtree(disc_path)
+    
+    return jsonify({'success': True, 'message': 'Дисциплина удалена'})
+
+
+@app.route('/admin/<comp_name>/close', methods=['POST'])
+def close_competition(comp_name):
+    """Закрыть соревнование"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    
+    import json
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    
+    config['status'] = 'closed'
+    
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    
+    return jsonify({'success': True, 'message': 'Соревнование закрыто'})
+
+
+@app.route('/admin/<comp_name>/open', methods=['POST'])
+def open_competition(comp_name):
+    """Открыть соревнование"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    
+    import json
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    
+    config['status'] = 'open'
+    
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    
+    return jsonify({'success': True, 'message': 'Соревнование открыто'})
+
+
+@app.route('/admin/<comp_name>/delete', methods=['POST'])
+def delete_competition(comp_name):
+    """Удалить соревнование"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    
+    try:
+        import shutil
+        shutil.rmtree(comp_path)
+        return jsonify({'success': True, 'message': 'Соревнование удалено'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/admin/clear-participants', methods=['POST'])
+def clear_participants():
+    """Очистить глобальный CSV участников"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    CSVManager.write_csv(PARTICIPANTS_CSV, [], CompetitionCSVManager.PARTICIPANTS_HEADERS)
+    return jsonify({'success': True, 'message': 'CSV участников очищен'})
+
+
+@app.route('/admin/clear-judges', methods=['POST'])
+def clear_judges():
+    """Очистить глобальный CSV судей"""
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    CSVManager.write_csv(JUDGES_CSV, [], CompetitionCSVManager.JUDGES_HEADERS)
+    return jsonify({'success': True, 'message': 'CSV судей очищен'})
+
+
+# ==================== РЕГИСТРАЦИЯ УЧАСТНИКОВ ====================
+
+@app.route('/<comp_name>/<kata_key>/reg', methods=['GET', 'POST'])
+def register_participants(comp_name, kata_key):
+    """Регистрация участников"""
+    if not session.get('admin'):
+        return redirect(url_for('admin_login'))
+    
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        flash('Соревнование не найдено', 'danger')
+        return redirect(url_for('admin_dashboard'))
+    
+    disc_path = os.path.join(comp_path, kata_key)
+    if not os.path.isdir(disc_path):
+        flash('Дисциплина не найдена', 'danger')
+        return redirect(url_for('edit_competition', comp_name=comp_name))
+    
+    if request.method == 'POST':
+        # Получаем данные из формы
+        pairs_data = []
+        judges_data = []
+        
+        # Парсим пары
+        pair_index = 0
+        while True:
+            tori_name = request.form.get(f'pair_{pair_index}_tori_name', '').strip()
+            uke_name = request.form.get(f'pair_{pair_index}_uke_name', '').strip()
+            
+            if not tori_name or not uke_name:
+                break
+            
+            tori_info = {
+                'ФИО': tori_name,
+                'год рождения': request.form.get(f'pair_{pair_index}_tori_birth', ''),
+                'разряд': request.form.get(f'pair_{pair_index}_tori_rank', ''),
+                'кю': request.form.get(f'pair_{pair_index}_tori_kyu', ''),
+                'СШ': request.form.get(f'pair_{pair_index}_tori_school', ''),
+                'тренер': request.form.get(f'pair_{pair_index}_tori_coach', '')
+            }
+            
+            uke_info = {
+                'ФИО': uke_name,
+                'год рождения': request.form.get(f'pair_{pair_index}_uke_birth', ''),
+                'разряд': request.form.get(f'pair_{pair_index}_uke_rank', ''),
+                'кю': request.form.get(f'pair_{pair_index}_uke_kyu', ''),
+                'СШ': request.form.get(f'pair_{pair_index}_uke_school', ''),
+                'тренер': request.form.get(f'pair_{pair_index}_uke_coach', '')
+            }
+            
+            def is_fully_filled_participant(info):
+                for h in CompetitionCSVManager.PARTICIPANTS_HEADERS:
+                    if not str(info.get(h, '')).strip():
+                        return False
+                return True
+            
+            if is_fully_filled_participant(tori_info):
+                CSVManager.upsert_participant(PARTICIPANTS_CSV, tori_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+            if is_fully_filled_participant(uke_info):
+                CSVManager.upsert_participant(PARTICIPANTS_CSV, uke_info, CompetitionCSVManager.PARTICIPANTS_HEADERS)
+            
+            # Добавляем в локальный CSV пар
+            pairs_data.append({
+                'номер пары': pair_index + 1,
+                'Тори_ФИО': tori_name,
+                'Тори_год рождения': request.form.get(f'pair_{pair_index}_tori_birth', ''),
+                'Тори_разряд': request.form.get(f'pair_{pair_index}_tori_rank', ''),
+                'Тори_кю': request.form.get(f'pair_{pair_index}_tori_kyu', ''),
+                'Тори_СШ': request.form.get(f'pair_{pair_index}_tori_school', ''),
+                'Тори_тренер': request.form.get(f'pair_{pair_index}_tori_coach', ''),
+                'Уке_ФИО': uke_name,
+                'Уке_год рождения': request.form.get(f'pair_{pair_index}_uke_birth', ''),
+                'Уке_разряд': request.form.get(f'pair_{pair_index}_uke_rank', ''),
+                'Уке_кю': request.form.get(f'pair_{pair_index}_uke_kyu', ''),
+                'Уке_СШ': request.form.get(f'pair_{pair_index}_uke_school', ''),
+                'Уке_тренер': request.form.get(f'pair_{pair_index}_uke_coach', '')
+            })
+            
+            pair_index += 1
+        
+        # Парсим судей (поддержка произвольного количества)
+        judge_items = []
+        for k, v in request.form.items():
+            if not k.startswith('judge_') or not k.endswith('_name'):
+                continue
+            name = str(v or '').strip()
+            if not name:
+                continue
+            mid = k[len('judge_'):-len('_name')]
+            try:
+                pos = int(mid)
+            except ValueError:
+                continue
+            if pos <= 0:
+                continue
+            judge_items.append((pos, name))
+        judge_items.sort(key=lambda x: x[0])
+
+        for judge_pos, judge_name in judge_items:
+            judge_info = {
+                'место': judge_pos,
+                'ФИО': judge_name
+            }
+            judges_data.append(judge_info)
+            # Добавляем в глобальный CSV судей
+            CSVManager.add_row(JUDGES_CSV, {'ФИО': judge_name}, CompetitionCSVManager.JUDGES_HEADERS)
+        
+        # Сохраняем в локальные CSV
+        if pairs_data:
+            pairs_file = os.path.join(disc_path, 'participants_list.csv')
+            CSVManager.write_csv(pairs_file, pairs_data, CompetitionCSVManager.PAIRS_HEADERS)
+            cfg = ensure_stage_config(comp_path, kata_key)
+            # prelim хранится в корне дисциплины (уже записано выше)
+            if cfg.get('mode') == 'final_only':
+                CSVManager.write_csv(
+                    os.path.join(disc_path, 'final', 'participants_list.csv'),
+                    pairs_data,
+                    CompetitionCSVManager.PAIRS_HEADERS,
+                )
+        
+        if judges_data:
+            judges_file = os.path.join(disc_path, 'judges_list.csv')
+            CSVManager.write_csv(judges_file, judges_data, CompetitionCSVManager.JUDGES_LIST_HEADERS)
+        
+        flash('Участники и судьи зарегистрированы', 'success')
+        return redirect(url_for('edit_competition', comp_name=comp_name))
+    
+    # Загружаем существующие данные
+    pairs_file = os.path.join(disc_path, 'participants_list.csv')
+    judges_file = os.path.join(disc_path, 'judges_list.csv')
+    
+    existing_pairs = CSVManager.read_csv(pairs_file) if os.path.exists(pairs_file) else []
+    existing_judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
+    
+    # Получаем список техник для дисциплины
+    techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
+    
+    # Получаем красивое название соревнования
+    comp_display_name = ''
+    config_file = os.path.join(comp_path, 'config.json')
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            comp_display_name = config.get('name', comp_name)
+    
+    return render_template('registration.html',
+                         comp_name=comp_name,
+                         kata_key=kata_key,
+                         kata_name=get_discipline_display_name(kata_key),
+                         comp_display_name=comp_display_name,
+                         techniques=techniques,
+                         existing_pairs=existing_pairs,
+                         existing_judges=existing_judges)
+
+
+# ==================== API ENDPOINTS ====================
+
+@app.route('/api/participants/search')
+def search_participants():
+    """API для поиска участников по ФИО"""
+    query = request.args.get('q', '').strip()
+    if not query or len(query) < 2:
+        return jsonify([])
+    
+    suggestions = CSVManager.get_name_suggestions(PARTICIPANTS_CSV, query)
+    return jsonify(suggestions)
+
+
+@app.route('/api/participants/column-suggestions')
+def participants_column_suggestions():
+    """Подсказки по уникальным значениям столбца СШ или тренер (глобальный participants.csv)."""
+    field = request.args.get('field', '').strip()
+    q = request.args.get('q', '').strip()
+    if field not in ('СШ', 'тренер') or len(q) < 1:
+        return jsonify([])
+    rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+    out = []
+    seen = set()
+    ql = q.lower()
+    for row in rows:
+        v = (row.get(field) or '').strip()
+        if not v or v.lower() in seen:
+            continue
+        if v.lower().startswith(ql):
+            seen.add(v.lower())
+            out.append(v)
+        if len(out) >= 20:
+            break
+    return jsonify(out)
+
+
+@app.route('/api/participants/info')
+def get_participant_info():
+    """API для получения информации о участнике"""
+    name = request.args.get('name', '').strip()
     if not name:
-        return jsonify({"error": "name required"}), 400
-    folder = re.sub(r"[^\w\-]+", "_", name)[:80]
-    comp = svc.get_or_create_competition(folder)
-    svc.set_competition_meta(folder, title=name)
-    return jsonify({"ok": True, "folder": folder, "id": comp.id}), 201
+        return jsonify({})
+    
+    participant = CSVManager.search_by_name(PARTICIPANTS_CSV, name)
+    return jsonify(participant or {})
 
 
-@app.post("/admin/clear-participants")
-@require_admin
-def api_clear_participants() -> Response:
-    with app.app_context():
-        n = svc.clear_participants()
-    return jsonify({"ok": True, "deleted": n})
+@app.route('/api/judges/search')
+def search_judges():
+    """API для поиска судей по ФИО"""
+    query = request.args.get('q', '').strip()
+    if not query or len(query) < 2:
+        return jsonify([])
+    
+    suggestions = CSVManager.get_name_suggestions(JUDGES_CSV, query)
+    return jsonify(suggestions)
 
 
-@app.post("/admin/clear-judges")
-@require_admin
-def api_clear_judges() -> Response:
-    with app.app_context():
-        n = svc.clear_judges()
-    return jsonify({"ok": True, "deleted": n})
+@app.route('/api/judges/info')
+def get_judge_info():
+    """API для получения информации о судье"""
+    name = request.args.get('name', '').strip()
+    if not name:
+        return jsonify({})
+    
+    judge = CSVManager.search_by_name(JUDGES_CSV, name)
+    return jsonify(judge or {})
 
 
-@app.post("/admin/<comp_name>/add-discipline")
-@require_admin
-def api_add_discipline(comp_name: str) -> Response:
-    data = request.get_json(silent=True) or {}
-    kata = _norm_kata(data.get("kata") or data.get("key") or "")
-    if kata not in technics.DISCIPLINE_ROWS_BY_KEY:
-        return jsonify({"error": "unknown discipline"}), 400
-    disc = svc.get_or_create_discipline(comp_name, kata,
-                                        techniques_count=int(
-                                            data.get("techniques_count", 10)))
-    return jsonify({"ok": True, "id": disc.id})
+@app.route('/api/judges/validate')
+def validate_judge():
+    """API для проверки существует ли судья в списке"""
+    name = request.args.get('name', '').strip()
+    if not name:
+        return jsonify({'exists': False})
+    
+    # Проверяем точное совпадение имени судьи
+    all_judges = CSVManager.read_csv(JUDGES_CSV)
+    for judge in all_judges:
+        judge_name = judge.get('ФИО', '').strip()
+        if judge_name.lower() == name.lower():
+            return jsonify({'exists': True})
+    
+    return jsonify({'exists': False})
 
 
-@app.post("/admin/<comp_name>/remove-discipline")
-@require_admin
-def api_remove_discipline(comp_name: str) -> Response:
-    data = request.get_json(silent=True) or {}
-    kata = _norm_kata(data.get("kata") or data.get("key") or "")
-    comp = Competition.query.filter_by(folder_name=comp_name).first()
-    if comp is None:
-        return jsonify({"error": "not found"}), 404
-    Discipline.query.filter_by(competition_id=comp.id, kata_key=kata)\
-        .delete(synchronize_session=False)
-    db.session.commit()
-    return jsonify({"ok": True})
-
-
-@app.post("/admin/<comp_name>/set-main-tablo")
-@require_admin
-def api_set_main_tablo(comp_name: str) -> Response:
-    data = request.get_json(silent=True) or {}
-    svc.set_main_tablo(comp_name, data.get("discipline") or data.get("kata") or None)
-    socketio.emit("meta_updated", {"competition": comp_name},
-                  room=f"tablo:{comp_name}")
-    return jsonify({"ok": True})
-
-
-@app.post("/admin/<comp_name>/generate-protocols")
-@require_admin
-def api_generate_protocols(comp_name: str) -> Response:
-    # протоколы формируются на лету; проверка целостности данных
-    ok = Competition.query.filter_by(folder_name=comp_name).first() is not None
-    return jsonify({"ok": ok}), (200 if ok else 404)
-
-
-@app.post("/admin/<comp_name>/<new_status>")
-@require_admin
-def api_set_comp_status(comp_name: str, new_status: str) -> Response:
-    if new_status not in ("open", "close"):
-        return jsonify({"error": "bad status"}), 400
-    svc.set_comp_status(comp_name, new_status)
-    return jsonify({"ok": True})
-
-
-@app.post("/admin/<comp_name>/<discipline_key>/stage")
-@require_admin
-def api_set_stage(comp_name: str, discipline_key: str) -> Response:
-    discipline_key = _norm_kata(discipline_key)
-    data = request.get_json(silent=True) or {}
-    stage = data.get("stage") or data.get("mode") or "qual"
-    top_n = int(data.get("final_top_n", 3) or 3)
-    if stage == "final":
-        svc.promote_top_to_final(comp_name, discipline_key, top_n)
-    svc.set_current_stage(comp_name, stage, top_n)
-    _reload_board(comp_name, discipline_key, "qual")
-    _reload_board(comp_name, discipline_key, "final")
-    return jsonify({"ok": True})
-
-
-@app.delete("/admin/<comp_name>/delete")
-@app.post("/admin/<comp_name>/delete")
-@require_admin
-def api_delete_competition(comp_name: str) -> Response:
-    ok = svc.delete_competition(comp_name)
-    return jsonify({"ok": ok}), (200 if ok else 404)
-
-
-# ---------- API для шаблонов (поиск, автодополнение, регистрация, судьи) ----------
-
-@app.get("/api/participants/search")
-def api_participants_search() -> Response:
-    q = request.args.get("q", "")
-    return jsonify([p.to_dict() for p in svc.search_participants(q)])
-
-
-@app.get("/api/participants/column-suggestions")
-def api_column_suggestions() -> Response:
-    field = request.args.get("field", "")
-    q = request.args.get("q", "")
-    return jsonify(svc.column_suggestions(field, q))
-
-
-@app.get("/api/participants/info")
-def api_participant_info() -> Response:
-    info = svc.participant_info(request.args.get("name", ""))
-    return jsonify(info or {})
-
-
-@app.get("/api/judges/search")
-def api_judges_search() -> Response:
-    q = request.args.get("q", "").lower().strip()
-    items = Judge.query.order_by(Judge.name).limit(500).all()
-    if q:
-        items = [j for j in items if q in (j.name or "").lower()]
-    return jsonify([j.to_dict() for j in items])
-
-
-@app.get("/api/<comp_name>/<kata_key>/registration-data")
-def api_registration_data(comp_name: str, kata_key: str) -> Response:
-    kata_key = _norm_kata(kata_key)
-    stage = request.args.get("stage", "qual")
+@app.route('/api/<comp_name>/<kata_key>/registration-data')
+def get_registration_data(comp_name, kata_key):
+    """API для получения данных регистрации"""
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        return jsonify({'error': 'Competition not found'}), 404
+    
+    disc_path = os.path.join(comp_path, kata_key)
+    if not os.path.isdir(disc_path):
+        return jsonify({'error': 'Discipline not found'}), 404
+    
+    pairs_file = os.path.join(disc_path, 'participants_list.csv')
+    judges_file = os.path.join(disc_path, 'judges_list.csv')
+    
+    existing_pairs = CSVManager.read_csv(pairs_file) if os.path.exists(pairs_file) else []
+    existing_judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
+    
     return jsonify({
-        "pairs": svc.get_effective_pairs(comp_name, kata_key, stage),
-        "participants": [p.to_dict() for p in
-                         Participant.query.order_by(Participant.name).limit(1000).all()],
+        'existing_pairs': existing_pairs,
+        'existing_judges': existing_judges
     })
 
 
-@app.post("/api/<comp_name>/<kata_key>/registration")
-@require_admin
-def api_registration_save(comp_name: str, kata_key: str) -> Response:
-    kata_key = _norm_kata(kata_key)
-    data = request.get_json(silent=True) or {}
-    stage = data.get("stage", "qual")
-    svc.get_or_create_discipline(comp_name, kata_key,
-                                 techniques_count=int(
-                                     data.get("techniques_count", 10) or 10))
-    svc.save_pairs(svc.get_or_create_discipline(comp_name, kata_key).id,
-                   stage, data.get("pairs", []))
-    _reload_board(comp_name, kata_key, stage)
-    return jsonify({"ok": True})
+@app.route('/api/<comp_name>/<kata_key>/save-scores', methods=['POST'])
+def save_judge_scores(comp_name, kata_key):
+    """Сохранить оценки судьи"""
+    if not request.json:
+        return jsonify({'error': 'No data'}), 400
+
+    judge_name = request.json.get('judge_name')
+    judge_position = request.json.get('judge_position')
+    pair_number = request.json.get('pair_number')
+    scores = request.json.get('scores', [])
+
+    techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
+
+    if len(scores) != len(techniques):
+        return jsonify({'error': 'Invalid scores length'}), 400
+
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    stage = stage_for_ops(comp_path, kata_key)
+    files = get_stage_files(comp_path, kata_key, stage)
+
+    # Получаем ФИО пары
+    pairs_file = files['participants']
+    pairs = CSVManager.read_csv(pairs_file)
+    pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == int(pair_number)), None)
+    if pair_obj:
+        tori_fio = pair_obj.get('Тори_ФИО', '')
+        uke_fio = pair_obj.get('Уке_ФИО', '')
+        protocol_path = CompetitionCSVManager.get_stage_protocol_path(comp_path, kata_key, stage, judge_name, int(judge_position), tori_fio, uke_fio)
+    else:
+        protocol_path = os.path.join(CompetitionCSVManager.get_stage_path(comp_path, kata_key, stage), 'protocols', f'{judge_name}_{judge_position}_{pair_number}.csv')
+
+    os.makedirs(os.path.dirname(protocol_path), exist_ok=True)
+
+    technique_data = [{'техника': tech, 'оценка': score} for tech, score in zip(techniques, scores)]
+
+    headers = ['техника', 'оценка']
+    CSVManager.write_csv(protocol_path, technique_data, headers)
+
+    return jsonify({'success': True})
 
 
-@app.post("/api/<comp_name>/<kata_key>/save-judge-action")
-def api_save_judge_action(comp_name: str, kata_key: str) -> Response:
-    """Сохранение оценки с формы судьи (template judge_form.html)."""
-    kata_key = _norm_kata(kata_key)
-    data = request.get_json(silent=True) or {}
-    stage = data.get("stage", "qual")
-    judge_name = (data.get("judge") or data.get("judge_name") or "").strip()
-    pair_number = int(data.get("pair_number") or data.get("pair") or 0)
-    raw = data.get("techniques_raw") or data.get("techniques") or data.get("scores") or {}
-    if not judge_name or pair_number <= 0:
-        return jsonify({"error": "judge and pair_number required"}), 400
-    total = svc.save_judge_score(comp_name, kata_key, stage, judge_name,
-                                 pair_number, raw)
-    _reload_board(comp_name, kata_key, stage)
-    return jsonify({"ok": True, "total": total})
+@app.route('/api/<comp_name>/<kata_key>/save-judge-action', methods=['POST'])
+def save_judge_action(comp_name, kata_key):
+    """Сохранить действие судьи"""
+    data = request.json
+    judge = data.get('judge')
+    pos = data.get('pos')
+    pair = data.get('pair')
+    details = data.get('details', [])
+    total = data.get('total')
+    isFinal = data.get('isFinal', False)
+
+    if not judge or not pos or not pair:
+        return jsonify({'error': 'Missing data'}), 400
+    try:
+        pos_int = int(pos)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid judge place'}), 400
+    if pos_int < 1 or pos_int > 5:
+        return jsonify({'error': 'Для оценивания используются места 1..5'}), 400
+
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    stage = stage_for_ops(comp_path, kata_key)
+    stage_cfg = ensure_stage_config(comp_path, kata_key)
+    if stage_cfg.get('status') == 'closed':
+        return jsonify({'error': 'Stage is closed'}), 400
+    files = get_stage_files(comp_path, kata_key, stage)
+    pairs = CSVManager.read_csv(files['participants'])
+    pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == int(pair)), None)
+    if not pair_obj:
+        return jsonify({'error': 'Pair not found'}), 400
+    tori_fio = pair_obj.get('Тори_ФИО', '')
+    uke_fio = pair_obj.get('Уке_ФИО', '')
+
+    # Рассчитываем scores из details
+    scores = []
+    for d in details:
+        if d.get('forgotten', False):
+            scores.append(0.0)
+        else:
+            score = 10.0
+            score -= d.get('m1', 0)
+            score -= d.get('m2', 0)
+            score -= d.get('med', 0)
+            score -= d.get('big', 0)
+            score -= d.get('c_minus', 0)
+            score -= d.get('c_plus', 0)  # c_plus is -0.5, so subtracting it adds 0.5
+            scores.append(max(0, min(10, score)))
+
+    # Сохраняем файл
+    protocol_path = CompetitionCSVManager.get_stage_protocol_path(comp_path, kata_key, stage, judge, pos_int, tori_fio, uke_fio)
+
+    os.makedirs(os.path.dirname(protocol_path), exist_ok=True)
+
+    techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
+    technique_data = [{'техника': tech, 'details_json': json.dumps(d)} for tech, d in zip(techniques, details)]
+
+    headers = ['техника', 'details_json']
+    CSVManager.write_csv(protocol_path, technique_data, headers)
+
+    if isFinal:
+        judges_file = os.path.join(comp_path, kata_key, 'judges_list.csv')
+        judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
+        meta = judge_positions_meta(judges)
+        if not meta['valid']:
+            return jsonify({'error': meta['error']}), 400
+        final_protocol_path = files['final_protocol']
+        all_results = CSVManager.read_csv(final_protocol_path) if os.path.exists(final_protocol_path) else []
+        
+        # Ищем или создаем запись для этой пары
+        pair_entry = None
+        for entry in all_results:
+            if int(entry.get('номер пары', 0)) == int(pair):
+                pair_entry = entry
+                break
+        
+        if not pair_entry:
+            pair_entry = {
+                'номер пары': pair,
+                'Тори': encode_participant_for_protocol(pair_obj, 'Тори'),
+                'Уке': encode_participant_for_protocol(pair_obj, 'Уке'),
+                'Судья 1': '',
+                'Судья 2': '',
+                'Судья 3': '',
+                'Судья 4': '',
+                'Судья 5': '',
+                'Сумма': '',
+                'Место': ''
+            }
+            all_results.append(pair_entry)
+        else:
+            pair_entry['Тори'] = encode_participant_for_protocol(pair_obj, 'Тори')
+            pair_entry['Уке'] = encode_participant_for_protocol(pair_obj, 'Уке')
+        
+        # Обновляем оценку судьи
+        judge_col = f'Судья {pos_int}'
+        pair_entry[judge_col] = total
+        final = _compute_final_from_entry(pair_entry, meta['effective_positions'])
+        pair_entry['Сумма'] = f'{final:.1f}' if final is not None else ''
+        
+        # Записываем обновленный финальный протокол
+        CSVManager.write_csv(final_protocol_path, all_results, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+    
+    return jsonify({'success': True})
 
 
-@app.get("/api/data/<table_name>")
-def api_data_get(table_name: str) -> Response:
-    return _data_editor_dispatch(table_name)
+@app.route('/api/<comp_name>/<kata_key>/get-judge-scores/<judge>/<int:pos>/<tori>/<uke>')
+def get_judge_scores(comp_name, kata_key, judge, pos, tori, uke):
+    """Получить существующие оценки судьи"""
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    stage = stage_for_ops(comp_path, kata_key)
+    protocol_path = CompetitionCSVManager.resolve_stage_protocol_path(comp_path, kata_key, stage, judge, pos, tori, uke)
+    details = {}
+    rows = CSVManager.read_csv(protocol_path)
+    for row in rows:
+        tech_name = row.get('техника', '')
+        details_json = row.get('details_json', '{}')
+        try:
+            detail = json.loads(details_json)
+        except json.JSONDecodeError:
+            detail = {}
+        details[tech_name] = detail
+    scores = details
+    return jsonify(scores)
 
 
-@app.put("/api/data/<table_name>/<int:item_id>")
-@app.post("/api/data/<table_name>/<int:item_id>")
-@require_admin
-def api_data_put(table_name: str, item_id: int) -> Response:
-    return _data_editor_dispatch(table_name, item_id=item_id, method="PUT")
+# ==================== СУДЕЙСКАЯ ЧАСТЬ ====================
+
+@app.route('/dashboard')
+def public_dashboard():
+    """Публичная панель со списком активных турниров"""
+    competitions = []
+    if os.path.exists(COMPETITIONS_BASE_DIR):
+        for comp_folder in os.listdir(COMPETITIONS_BASE_DIR):
+            comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_folder)
+            if os.path.isdir(comp_path):
+                import json
+                config_file = os.path.join(comp_path, 'config.json')
+                config = {}
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                
+                if config.get('status') == 'open':
+                    # Получаем дисциплины
+                    disciplines = []
+                    for folder in os.listdir(comp_path):
+                        folder_path = os.path.join(comp_path, folder)
+                        if os.path.isdir(folder_path) and folder not in ('__pycache__', 'results'):
+                            stage_cfg = ensure_stage_config(comp_path, folder)
+                            stage_label = 'Финал' if stage_cfg.get('current_stage') == 'final' else 'Предварительные встречи'
+                            disciplines.append({
+                                'key': folder,
+                                'name': get_discipline_display_name(folder),
+                                'stage_label': stage_label,
+                            })
+                    
+                    competitions.append({
+                        'name': comp_folder,
+                        'display_name': config.get('name', comp_folder),
+                        'disciplines': disciplines
+                    })
+    
+    # Сортируем по имени соревнования в обратном порядке
+    competitions.sort(key=lambda x: x['name'], reverse=True)
+    return render_template('public_dashboard.html', competitions=competitions)
 
 
-@app.delete("/api/data/<table_name>/<int:item_id>")
-@require_admin
-def api_data_delete(table_name: str, item_id: int) -> Response:
-    return _data_editor_dispatch(table_name, item_id=item_id, method="DELETE")
+@app.route('/judge/<comp_name>/<kata_key>', methods=['GET', 'POST'])
+def judge_page(comp_name, kata_key):
+    """Форма судьи для оценки"""
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        flash('Соревнование не найдено', 'danger')
+        return redirect(url_for('public_dashboard'))
+    
+    disc_path = os.path.join(comp_path, kata_key)
+    if not os.path.isdir(disc_path):
+        flash('Дисциплина не найдена', 'danger')
+        return redirect(url_for('public_dashboard'))
+    
+    stage_cfg = ensure_stage_config(comp_path, kata_key)
+    stage = stage_for_ops(comp_path, kata_key)
+    if stage_cfg.get('status') == 'closed':
+        flash('Этап дисциплины закрыт', 'warning')
+    techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
+
+    stage_files = get_stage_files(comp_path, kata_key, stage)
+    pairs = CSVManager.read_csv(stage_files['participants'])
+
+    judges_file = os.path.join(disc_path, 'judges_list.csv')
+    judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
+    meta = judge_positions_meta(judges)
+    judge_positions = [p for p in meta['effective_positions'] if 1 <= p <= 5]
+
+    return render_template('judge_form.html',
+                         comp_name=comp_name,
+                         kata_key=kata_key,
+                         kata_name=get_discipline_display_name(kata_key),
+                         techniques=techniques,
+                         pairs=pairs,
+                         judges=judges,
+                         judge_positions=judge_positions,
+                         stage=stage,
+                         stage_error='' if meta['valid'] else meta['error'])
 
 
-@app.post("/api/data/<table_name>")
-@require_admin
-def api_data_post(table_name: str) -> Response:
-    return _data_editor_dispatch(table_name, method="POST")
+# ==================== ТАБЛО ====================
+
+@app.route('/tablo/<comp_name>')
+def main_tablo(comp_name):
+    """Динамическое главное табло с автоматическим обновлением через WebSocket"""
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        flash('Соревнование не найдено', 'danger')
+        return redirect(url_for('public_dashboard'))
+
+    # Читаем конфигурацию соревнования
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+    comp_display_name = config.get('name', comp_name)
+
+    # Рендерим динамическое табло (без перенаправления)
+    return render_template('main_tablo_dynamic.html',
+                         comp_name=comp_name,
+                         comp_display_name=comp_display_name,
+                         config=config)
 
 
-def _data_editor_dispatch(table_name: str, item_id: int | None = None,
-                          method: str = "GET") -> Response:
-    search = request.args.get("search", "")
-    if table_name == "participants":
-        if method == "GET":
-            items = svc.search_participants(search, limit=500) if search else \
-                Participant.query.order_by(Participant.name).limit(500).all()
-            return jsonify({"items": [p.to_dict() for p in items]})
-        data = request.get_json(silent=True) or {}
-        if method == "POST":
-            p = svc.upsert_participant(
-                data.get("name", "").strip(),
-                int(data["birth_year"]) if data.get("birth_year") else None,
-                rank=data.get("rank"), kyu=data.get("kyu"),
-                sports_school=data.get("sports_school"), coach=data.get("coach"))
-            return jsonify(p.to_dict()), 201
-        if method == "PUT" and item_id:
-            fields = {k: v for k, v in data.items()
-                      if k in ("name", "birth_year", "rank", "kyu",
-                               "sports_school", "coach")}
-            p = svc.update_participant(item_id, **fields)
-            return (jsonify(p.to_dict()), 200) if p else \
-                (jsonify({"error": "not found"}), 404)
-        if method == "DELETE" and item_id:
-            p = db.session.get(Participant, item_id)
-            if p is None:
-                return jsonify({"error": "not found"}), 404
-            db.session.delete(p)
-            db.session.commit()
-            return jsonify({"ok": True})
-    elif table_name == "judges":
-        if method == "GET":
-            items = Judge.query.order_by(Judge.name).limit(500).all()
-            if search:
-                items = [j for j in items if search.lower() in (j.name or "").lower()]
-            return jsonify({"items": [j.to_dict() for j in items]})
-        data = request.get_json(silent=True) or {}
-        if method == "POST":
-            j = svc.upsert_judge(data.get("name", "").strip(),
-                                 category=data.get("category"),
-                                 region=data.get("region"))
-            return jsonify(j.to_dict()), 201
-        if method == "PUT" and item_id:
-            fields = {k: v for k, v in data.items()
-                      if k in ("name", "category", "region")}
-            j = svc.update_judge(item_id, **fields)
-            return (jsonify(j.to_dict()), 200) if j else \
-                (jsonify({"error": "not found"}), 404)
-        if method == "DELETE" and item_id:
-            j = db.session.get(Judge, item_id)
-            if j is None:
-                return jsonify({"error": "not found"}), 404
-            db.session.delete(j)
-            db.session.commit()
-            return jsonify({"ok": True})
-    elif table_name == "competitions":
-        if method == "GET":
-            return jsonify({"items": svc.get_all_competitions()})
-        if method == "POST":
-            data = request.get_json(silent=True) or {}
-            name = (data.get("name") or "").strip()
-            if not name:
-                return jsonify({"error": "name required"}), 400
-            folder = data.get("folder_name") or re.sub(
-                r"[^\w\-]+", "_", name)[:80]
-            c = svc.get_or_create_competition(folder)
-            svc.set_competition_meta(folder, title=name)
-            return jsonify({"id": c.id, "folder_name": folder}), 201
-        if method == "DELETE" and item_id:
-            c = db.session.get(Competition, item_id)
-            if c is None:
-                return jsonify({"error": "not found"}), 404
-            db.session.delete(c)
-            db.session.commit()
-            return jsonify({"ok": True})
-    return jsonify({"error": f"unsupported table/method: {table_name}/{method}"}), 400
+@app.route('/tablo/<comp_name>/<kata_key>')
+def tablo(comp_name, kata_key):
+    """Итоговая таблица результатов"""
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(comp_path):
+        flash('Соревнование не найдено', 'danger')
+        return redirect(url_for('public_dashboard'))
+    
+    disc_path = os.path.join(comp_path, kata_key)
+    if not os.path.isdir(disc_path):
+        flash('Дисциплина не найдена', 'danger')
+        return redirect(url_for('public_dashboard'))
+    
+    config_file = os.path.join(comp_path, 'config.json')
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    comp_display_name = config.get('name', comp_name)
+    
+    stage_cfg = ensure_stage_config(comp_path, kata_key)
+    stage = stage_for_ops(comp_path, kata_key)
+    techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
+    stage_files = get_stage_files(comp_path, kata_key, stage)
+    pairs = CSVManager.read_csv(stage_files['participants'])
+
+    judges_file = os.path.join(disc_path, 'judges_list.csv')
+    judges = CSVManager.read_csv(judges_file) if os.path.exists(judges_file) else []
+    meta = judge_positions_meta(judges)
+    effective_positions = [p for p in meta['effective_positions'] if 1 <= p <= 5]
+    final_protocol_path = stage_files['final_protocol']
+    
+    def build_results_from_pairs():
+        results = []
+        for pair in pairs:
+            pair_number = int(pair.get('номер пары', 0))
+            judge_scores = []
+            for judge_pos in effective_positions:
+                judge_obj = next((j for j in judges if str(j.get('место', '')).strip() == str(judge_pos)), {})
+                judge_name = judge_obj.get('ФИО', '')
+                protocol_path = CompetitionCSVManager.resolve_stage_protocol_path(
+                    comp_path, kata_key, stage, judge_name, judge_pos, pair.get('Тори_ФИО', ''), pair.get('Уке_ФИО', '')
+                )
+                scores = {}
+                for row in CSVManager.read_csv(protocol_path):
+                    tech_name = row.get('техника', '')
+                    try:
+                        scores[tech_name] = json.loads(row.get('details_json', '{}'))
+                    except json.JSONDecodeError:
+                        scores[tech_name] = {}
+                if scores:
+                    technique_scores = []
+                    forgotten_flags = []
+                    for tech in techniques:
+                        detail = scores.get(tech, {})
+                        if detail.get('forgotten', False):
+                            technique_scores.append(0.0)
+                            forgotten_flags.append(True)
+                        else:
+                            score = 10.0
+                            score -= detail.get('m1', 0)
+                            score -= detail.get('m2', 0)
+                            score -= detail.get('med', 0)
+                            score -= detail.get('big', 0)
+                            score -= detail.get('c_minus', 0)
+                            score -= detail.get('c_plus', 0)
+                            technique_scores.append(max(0, min(10, score)))
+                            forgotten_flags.append(False)
+                    judge_total = sum(technique_scores)
+                    if any(forgotten_flags):
+                        judge_total /= 2
+                    judge_scores.append(judge_total)
+                else:
+                    judge_scores.append(None)
+            if judge_scores and all(s is not None for s in judge_scores):
+                final_score = calculate_pair_final_score(judge_scores, judge_count=max(3, len(effective_positions)))
+            else:
+                final_score = None
+            results.append({
+                'pair_number': pair_number,
+                'tori': encode_participant_for_protocol(pair, 'Тори'),
+                'uke': encode_participant_for_protocol(pair, 'Уке'),
+                'judge_scores': judge_scores,
+                'final_score': final_score,
+            })
+        return results
+    
+    if os.path.exists(final_protocol_path):
+        existing_results = []
+        rows_existing = CSVManager.read_csv(final_protocol_path)
+        for row in rows_existing:
+            judge_scores = []
+            for p in effective_positions:
+                if 1 <= p <= 5:
+                    try:
+                        v = float(row.get(f'Судья {p}', '')) if row.get(f'Судья {p}', '') != '' else None
+                    except ValueError:
+                        v = None
+                    judge_scores.append(v)
+            try:
+                final_score = float(row.get('Сумма', '')) if row.get('Сумма') else None
+            except ValueError:
+                final_score = None
+            existing_results.append({
+                'pair_number': int(row.get('номер пары', 0)),
+                'tori': row.get('Тори', ''),
+                'uke': row.get('Уке', ''),
+                'judge_scores': judge_scores,
+                'final_score': final_score,
+                'place': int(row.get('Место', 0)) if str(row.get('Место', '')).strip().isdigit() else None,
+            })
+        if existing_results:
+            base_results = existing_results
+        else:
+            base_results = build_results_from_pairs()
+    else:
+        base_results = build_results_from_pairs()
+    
+    final_results = prepare_tablo_results(base_results, pairs)
+    
+    rows = []
+    for result in final_results:
+        row = {
+            'номер пары': result['pair_number'],
+            'Тори': result['tori'],
+            'Уке': result['uke'],
+            'Судья 1': '',
+            'Судья 2': '',
+            'Судья 3': '',
+            'Судья 4': '',
+            'Судья 5': '',
+            'Сумма': result['final_score'] if result['final_score'] is not None else '',
+            'Место': result['place'] if result.get('place') is not None else '',
+        }
+        for idx, p in enumerate(effective_positions):
+            if 1 <= p <= 5 and idx < len(result['judge_scores']) and result['judge_scores'][idx] is not None:
+                row[f'Судья {p}'] = result['judge_scores'][idx]
+        rows.append(row)
+    CSVManager.write_csv(final_protocol_path, rows, CompetitionCSVManager.FINAL_PROTOCOL_HEADERS)
+    
+    return render_template(
+        'tablo.html',
+        comp_name=comp_name,
+        comp_display_name=comp_display_name,
+        kata_key=kata_key,
+        kata_name=get_discipline_display_name(kata_key),
+        judges=[j for j in judges if str(j.get('место', '')).strip().isdigit() and int(j.get('место', 0)) in effective_positions],
+        results=final_results,
+        config=config,
+        stage=stage,
+        stage_label='Финал' if stage == 'final' else 'Предварительные встречи',
+        display_date=format_date_ru(datetime.now()),
+    )
 
 
-# ---------- init ----------
+# ==================== ERROR HANDLERS ====================
 
-def init_db(with_import: bool = True) -> None:
-    with app.app_context():
-        db.create_all()
-        configure_sqlite_pragmas(db.engine)
-        logger.info("Таблицы базы данных созданы/проверены")
-        if with_import:
-            import_participants_csv(config.PARTICIPANTS_CSV)
-            import_judges_csv(config.JUDGES_CSV)
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('error.html', message='Страница не найдена'), 404
 
 
-socketio.init_app(app)
-init_db()
+@app.errorhandler(500)
+def internal_error(error):
+    return render_template('error.html', message='Внутренняя ошибка сервера'), 500
 
-if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 5000
-    socketio.run(app, host="0.0.0.0", port=port, debug=False,
-                 allow_unsafe_werkzeug=True)
+
+# ==================== WEBSOCKET HANDLERS ====================
+
+@socketio.on('connect')
+def handle_connect():
+    """Обработка подключения клиента"""
+    print(f'✅ Client connected: {request.sid}')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Обработка отключения клиента"""
+    print(f'⚠️ Client disconnected: {request.sid}')
+
+@socketio.on('join_tablo')
+def handle_join_tablo(data):
+    """Клиент присоединяется к комнате главного табло"""
+    comp_name = data.get('comp_name')
+    print(f'📥 Received join_tablo request: {data}')
+
+    if comp_name:
+        room = f'tablo_{comp_name}'
+        join_room(room)
+        print(f'✅ Client {request.sid} joined room: {room}')
+
+        # Отправляем текущую дисциплину клиенту
+        comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+        config_file = os.path.join(comp_path, 'config.json')
+        if os.path.exists(config_file):
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            discipline = config.get('main_tablo_discipline', '')
+            print(f'📤 Sending current discipline to client: {discipline}')
+            emit('tablo_update', {
+                'comp_name': comp_name,
+                'discipline_key': discipline
+            })
+        else:
+            print(f'⚠️ Config file not found: {config_file}')
+
+@socketio.on('leave_tablo')
+def handle_leave_tablo(data):
+    """Клиент покидает комнату главного табло"""
+    comp_name = data.get('comp_name')
+    if comp_name:
+        room = f'tablo_{comp_name}'
+        leave_room(room)
+        print(f'👋 Client {request.sid} left room: {room}')
+
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
