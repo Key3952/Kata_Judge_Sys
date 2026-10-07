@@ -1,0 +1,393 @@
+{% extends "base.html" %}
+
+{% block title %}Главное Табло - {{ comp_display_name }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    body {
+        overflow: hidden;
+    }
+    
+    .tablo-container {
+        width: 100vw;
+        height: 100vh;
+        position: fixed;
+        top: 0;
+        left: 0;
+        background: var(--page-bg);
+        opacity: 0;
+        transition: opacity 0.5s ease;
+    }
+    
+    .tablo-container.visible {
+        opacity: 1;
+    }
+
+    .tablo-frame {
+        width: 100%;
+        height: 100%;
+        border: none;
+    }
+    
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--page-bg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        transition: opacity 0.5s ease;
+    }
+    
+    .loading-overlay.hidden {
+        opacity: 0;
+        pointer-events: none;
+    }
+    
+    .loading-content {
+        text-align: center;
+        padding: 3rem;
+    }
+    
+    .loading-spinner {
+        width: 60px;
+        height: 60px;
+        border: 4px solid var(--card-border);
+        border-top-color: var(--primary);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 1.5rem;
+    }
+    
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+    
+    .loading-text {
+        font-size: 1.2rem;
+        color: var(--page-text);
+        margin-bottom: 0.5rem;
+    }
+    
+    .loading-subtext {
+        font-size: 0.9rem;
+        color: var(--page-text);
+        opacity: 0.6;
+    }
+    
+    .connection-status {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        padding: 8px 16px;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        z-index: 10000;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(0, 0, 0, 0.7);
+        color: white;
+        backdrop-filter: blur(10px);
+        transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    
+    .connection-status.hidden {
+        opacity: 0;
+        transform: translateY(-20px);
+        pointer-events: none;
+    }
+
+    .status-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #10b981;
+        animation: pulse 2s ease-in-out infinite;
+    }
+    
+    .status-indicator.disconnected {
+        background: #ef4444;
+        animation: none;
+    }
+    
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+    
+    .empty-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        text-align: center;
+        padding: 2rem;
+    }
+    
+    .empty-state-content {
+        max-width: 600px;
+    }
+    
+    .empty-state-icon {
+        font-size: 5rem;
+        margin-bottom: 1.5rem;
+        opacity: 0.3;
+    }
+    
+    .empty-state h2 {
+        font-size: 2rem;
+        margin-bottom: 1rem;
+        color: var(--page-text);
+    }
+    
+    .empty-state p {
+        font-size: 1.1rem;
+        color: var(--page-text);
+        opacity: 0.7;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Индикатор подключения -->
+<div class="connection-status" id="connectionStatus">
+    <div class="status-indicator" id="statusIndicator"></div>
+    <span id="statusText">Подключение...</span>
+</div>
+
+<!-- Оверлей загрузки -->
+<div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-content">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Загрузка табло...</div>
+        <div class="loading-subtext">{{ comp_display_name }}</div>
+    </div>
+</div>
+
+<!-- Контейнер для iframe с табло -->
+<div class="tablo-container" id="tabloContainer" style="display: none;">
+    <iframe id="tabloFrame" class="tablo-frame" src=""></iframe>
+</div>
+
+<!-- Пустое состояние -->
+<div class="empty-state" id="emptyState" style="display: none;">
+    <div class="empty-state-content">
+        <div class="empty-state-icon">📊</div>
+        <h2>Главное Табло</h2>
+        <p>{{ comp_display_name }}</p>
+        <p>Ожидание выбора дисциплины...<br>
+        Администратор настроит отображение в панели управления.</p>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script>
+const compName = '{{ comp_name }}';
+const socket = io({
+    transports: ['websocket', 'polling'],
+    upgrade: true,
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionAttempts: 5
+});
+
+let currentDiscipline = '{{ config.main_tablo_discipline or "" }}';
+let isConnected = false;
+
+// Элементы DOM
+const loadingOverlay = document.getElementById('loadingOverlay');
+const tabloContainer = document.getElementById('tabloContainer');
+const tabloFrame = document.getElementById('tabloFrame');
+const emptyState = document.getElementById('emptyState');
+const statusIndicator = document.getElementById('statusIndicator');
+const statusText = document.getElementById('statusText');
+
+// Обработка подключения
+socket.on('connect', () => {
+    console.log('✅ Connected to server');
+    console.log('Socket ID:', socket.id);
+    isConnected = true;
+    updateConnectionStatus(true);
+    
+    // Присоединяемся к комнате табло
+    console.log('Joining tablo room:', compName);
+    socket.emit('join_tablo', { comp_name: compName });
+});
+
+// Обработка ошибок подключения
+socket.on('connect_error', (error) => {
+    console.error('❌ Connection error:', error);
+    updateConnectionStatus(false);
+});
+
+socket.on('connect_timeout', () => {
+    console.error('⏱️ Connection timeout');
+    updateConnectionStatus(false);
+});
+
+socket.on('error', (error) => {
+    console.error('❌ Socket error:', error);
+});
+
+// Обработка отключения
+socket.on('disconnect', (reason) => {
+    console.log('⚠️ Disconnected from server. Reason:', reason);
+    isConnected = false;
+    updateConnectionStatus(false);
+});
+
+// Обработка переподключения
+socket.on('reconnect', (attemptNumber) => {
+    console.log('🔄 Reconnected after', attemptNumber, 'attempts');
+    isConnected = true;
+    updateConnectionStatus(true);
+    socket.emit('join_tablo', { comp_name: compName });
+});
+
+socket.on('reconnect_attempt', (attemptNumber) => {
+    console.log('🔄 Reconnection attempt', attemptNumber);
+});
+
+socket.on('reconnect_error', (error) => {
+    console.error('❌ Reconnection error:', error);
+});
+
+socket.on('reconnect_failed', () => {
+    console.error('❌ Reconnection failed');
+    updateConnectionStatus(false);
+});
+
+// Обработка обновления табло
+socket.on('tablo_update', (data) => {
+    console.log('Tablo update received:', data);
+    
+    if (data.comp_name === compName) {
+        const newDiscipline = data.discipline_key;
+        
+        if (newDiscipline !== currentDiscipline) {
+            currentDiscipline = newDiscipline;
+            loadTablo(newDiscipline);
+        }
+    }
+});
+
+// Загрузка табло
+function loadTablo(disciplineKey) {
+    if (!disciplineKey) {
+        // Показываем пустое состояние
+        showEmptyState();
+        return;
+    }
+    
+    // Плавное скрытие текущего табло
+    if (tabloContainer.style.display === 'block') {
+        tabloContainer.classList.remove('visible');
+
+        // Ждем завершения анимации перед загрузкой нового
+        setTimeout(() => {
+            loadTabloContent(disciplineKey);
+        }, 500);
+    } else {
+        loadTabloContent(disciplineKey);
+    }
+}
+
+// Загрузка содержимого табло
+function loadTabloContent(disciplineKey) {
+    // Показываем загрузку
+    showLoading();
+    
+    // Формируем URL табло
+    const tabloUrl = `/tablo/${compName}/${disciplineKey}`;
+    
+    // Загружаем табло в iframe
+    tabloFrame.src = tabloUrl;
+    
+    // Ждем загрузки iframe
+    tabloFrame.onload = () => {
+        hideLoading();
+        showTablo();
+    };
+    
+    // Таймаут на случай ошибки загрузки
+    setTimeout(() => {
+        if (!loadingOverlay.classList.contains('hidden')) {
+            hideLoading();
+            showTablo();
+        }
+    }, 3000);
+}
+
+// Показать загрузку
+function showLoading() {
+    loadingOverlay.classList.remove('hidden');
+    tabloContainer.style.display = 'none';
+    emptyState.style.display = 'none';
+}
+
+// Скрыть загрузку
+function hideLoading() {
+    loadingOverlay.classList.add('hidden');
+}
+
+// Показать табло
+function showTablo() {
+    tabloContainer.style.display = 'block';
+    emptyState.style.display = 'none';
+
+    // Плавное появление
+    setTimeout(() => {
+        tabloContainer.classList.add('visible');
+    }, 50);
+}
+
+// Показать пустое состояние
+function showEmptyState() {
+    hideLoading();
+    tabloContainer.style.display = 'none';
+    emptyState.style.display = 'flex';
+}
+
+// Обновить статус подключения
+function updateConnectionStatus(connected) {
+    const connectionStatus = document.getElementById('connectionStatus');
+
+    if (connected) {
+        statusIndicator.classList.remove('disconnected');
+        statusText.textContent = 'Подключено';
+
+        // Скрываем плашку через 2 секунды после успешного подключения
+        setTimeout(() => {
+            connectionStatus.classList.add('hidden');
+        }, 2000);
+    } else {
+        statusIndicator.classList.add('disconnected');
+        statusText.textContent = 'Отключено';
+
+        // Показываем плашку при отключении
+        connectionStatus.classList.remove('hidden');
+    }
+}
+
+// Инициализация при загрузке страницы
+window.addEventListener('DOMContentLoaded', () => {
+    // Загружаем текущую дисциплину
+    if (currentDiscipline) {
+        loadTablo(currentDiscipline);
+    } else {
+        showEmptyState();
+    }
+});
+
+// Очистка при закрытии страницы
+window.addEventListener('beforeunload', () => {
+    socket.emit('leave_tablo', { comp_name: compName });
+});
+</script>
+{% endblock %}

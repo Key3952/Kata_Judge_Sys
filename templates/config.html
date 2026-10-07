@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Создание Соревнования{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h4 class="mb-0">➕ Создание Нового Соревнования</h4>
+            </div>
+            <div class="card-body p-5">
+                <form method="POST" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="comp_name" class="form-label">📝 Название Соревнования:</label>
+                        <input type="text" id="comp_name" name="comp_name" class="form-control form-control-lg"
+                               placeholder="Первенство..." required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="comp_path" class="form-label">📁 Путь для Сохранения:</label>
+                        <div class="input-group input-group-lg">
+                            <input type="text" id="comp_path" name="comp_path" class="form-control"
+                                   value="{{ default_path }}" placeholder="/path/to/competitions">
+                            <button type="button" class="btn btn-outline-secondary" id="default_path_btn" title="По умолчанию">
+                                ↺ По умолчанию
+                            </button>
+                        </div>
+                        <small class="text-muted">По умолчанию: {{ default_path }}</small>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-accent btn-lg">
+                            ✅ Создать Соревнование
+                        </button>
+                        <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary btn-lg">
+                            ❌ Отмена
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('default_path_btn').addEventListener('click', function() {
+    document.getElementById('comp_path').value = "{{ default_path }}";
+});
+
+// Нормализация пути для Windows и Linux
+document.querySelector('form').addEventListener('submit', function(e) {
+    const pathInput = document.getElementById('comp_path');
+    if (pathInput.value) {
+        // Конвертируем обратные слеши в прямые для унификации
+        let path = pathInput.value.replace(/\\/g, '/');
+        pathInput.value = path;
+    }
+});
+</script>
+{% endblock %}

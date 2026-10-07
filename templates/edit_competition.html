@@ -1,0 +1,505 @@
+{% extends "base.html" %}
+
+{% block title %}Редактор Соревнования{% endblock %}
+
+{% block extra_css %}
+<style>
+    .disc-table {
+        border-collapse: collapse !important;
+    }
+    .disc-table thead tr {
+        background: transparent !important;
+    }
+    .disc-table thead th {
+        background: var(--card-bg) !important;
+        color: var(--page-text) !important;
+        border-bottom: 1px solid var(--card-border) !important;
+        border-radius: 0 !important;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <h2 class="page-hero-title">📋 {{ config.name }}</h2>
+        <span class="badge bg-info mt-2">{{ config.status.upper() }}</span>
+    </div>
+    <div class="col-md-4 text-end">
+        <button onclick="toggleCompetition('{{ comp_name }}', '{{ config.status }}')"
+                class="btn {% if config.status == 'open' %}btn-danger{% else %}btn-success{% endif %}">
+            {% if config.status == 'open' %}🔒 Закрыть{% else %}🔓 Открыть{% endif %}
+        </button>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">📚 Дисциплины</h5>
+            </div>
+            <div class="card-body">
+                {% if disciplines %}
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover disc-table">
+                        <thead>
+                            <tr>
+                                <th>Дисциплина</th>
+                                <th style="width: 80px;">Пар</th>
+                                <th style="width: 190px;">Этап</th>
+                                <th style="width: 170px;">Периоды</th>
+                                <th style="width: 220px;">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for disc in disciplines %}
+                            <tr>
+                                <td><a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}" class="link-body-emphasis"><strong>{{ disc.name }}</strong></a></td>
+                                <td>{{ disc.pair_count }}</td>
+                                <td>
+                                    <div class="small">
+                                        <div><strong>{{ 'Финал' if disc.stage.current_stage == 'final' else 'Предварительные встречи' }}</strong></div>
+                                        <div class="text-muted">режим: {{ disc.stage.mode }}, статус: {{ disc.stage.status }}, top: {{ disc.stage.final_top_n }}</div>
+                                    </div>
+                                </td>
+                                <td>
+                                    <button type="button" onclick="stageAction('{{ comp_name }}', '{{ disc.key }}', 'set_prelim')"
+                                            class="btn btn-sm btn-outline-warning" title="Открыть предварительные встречи">P</button>
+                                    <button type="button" onclick="stageAction('{{ comp_name }}', '{{ disc.key }}', 'open_final')"
+                                            class="btn btn-sm btn-outline-success" title="Открыть финал из TOP-N">F</button>
+                                    <button type="button" onclick="stageAction('{{ comp_name }}', '{{ disc.key }}', 'set_final_only')"
+                                            class="btn btn-sm btn-outline-primary" title="Сразу финал">S</button>
+                                    <button type="button" onclick="stageAction('{{ comp_name }}', '{{ disc.key }}', 'close_stage')"
+                                            class="btn btn-sm btn-outline-dark" title="Закрыть текущий этап">⛔</button>
+                                </td>
+                                <td>
+                                    <a href="{{ url_for('register_participants', comp_name=comp_name, kata_key=disc.key) }}"
+                                       class="btn btn-sm btn-primary" title="Редактировать участников">
+                                        ✏️
+                                    </a>
+                                    <a href="{{ url_for('tablo', comp_name=comp_name, kata_key=disc.key) }}"
+                                       class="btn btn-sm btn-info">
+                                        📊
+                                    </a>
+                                    <button type="button" onclick="generateProtocols('{{ comp_name }}', '{{ disc.key }}', this)"
+                                            class="btn btn-sm btn-outline-secondary" title="Сгенерировать протоколы по этой дисциплине">
+                                        📄
+                                    </button>
+                                    <button onclick="removeDiscipline('{{ comp_name }}', '{{ disc.key }}')"
+                                            class="btn btn-sm btn-danger">
+                                        🗑️
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-info mb-0">ℹ️ Дисциплины не добавлены</div>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if available_disciplines %}
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">➕ Добавить Дисциплину</h5>
+            </div>
+            <div class="card-body">
+                <div class="input-group">
+                    <select id="discipline_select" class="form-select">
+                        <option value="">Выберите...</option>
+                        {% for disc in available_disciplines %}
+                        <option value="{{ disc.key }}">{{ disc.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button onclick="addDiscipline('{{ comp_name }}')" class="btn btn-accent">
+                        ➕ Добавить
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">ℹ️ Информация</h5>
+            </div>
+            <div class="card-body">
+                <p><strong>Статус:</strong> {{ config.status }}</p>
+                <p><strong>Создано:</strong> {{ config.created.split('T')[0] }}</p>
+                <p><strong>Дисциплин:</strong> {{ disciplines | length }}</p>
+
+                <hr>
+                <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary w-100">
+                    ← Вернуться
+                </a>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header">
+                <h5 class="mb-0">📺 Главное Табло</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-3">
+                    Выберите дисциплину, которая будет отображаться на главном табло соревнования.
+                </p>
+                {% if disciplines %}
+                <div class="mb-3">
+                    <label class="form-label small">Текущая дисциплина:</label>
+                    <select id="mainTabloSelect" class="form-select form-select-sm">
+                        <option value="">Не выбрана</option>
+                        {% for disc in disciplines %}
+                        <option value="{{ disc.key }}" {% if config.main_tablo_discipline == disc.key %}selected{% endif %}>
+                            {{ disc.name }} ({{ 'Финал' if disc.stage.current_stage == 'final' else 'Предварительные' }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="button" onclick="setMainTablo('{{ comp_name }}')" class="btn btn-accent btn-sm w-100">
+                    💾 Сохранить выбор
+                </button>
+                <a href="{{ url_for('main_tablo', comp_name=comp_name) }}" class="btn btn-outline-primary btn-sm w-100 mt-2">
+                    📺 Открыть главное табло
+                </a>
+                {% else %}
+                <p class="text-muted small mb-0">Добавьте дисциплины для настройки главного табло</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h5 class="mb-0">📑 Протоколы</h5>
+                <button type="button" id="btnGenAllProtocols" onclick="generateProtocols('{{ comp_name }}', null, this)"
+                        class="btn btn-sm btn-accent">
+                    Сгенерировать все
+                </button>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">
+                    <strong>Структура файлов:</strong><br>
+                    • <strong>Предварительные:</strong> <code>дисциплина/protokol.xlsx</code>, <code>.pdf</code><br>
+                    • <strong>Финал:</strong> <code>дисциплина/final/protokol ФИНАЛ.xlsx</code>, <code>.pdf</code><br>
+                    • <strong>Итоги:</strong> <code>results/</code> — только финальные протоколы (xlsx, pdf)
+                </p>
+                <div id="protocolStatusBlock" class="small">
+                    {% if protocol_status.disciplines %}
+                    <ul class="list-unstyled mb-2" id="protocolStatusList">
+                        {% for ps in protocol_status.disciplines %}
+                        <li class="mb-1" data-disc="{{ ps.key }}">
+                            <strong>{{ ps.key }}</strong>:
+                            пар в финале {{ ps.pairs_registered }},
+                            с суммой {{ ps.final_with_total }},
+                            файлов судейских {{ ps.judge_protocol_files }}
+                            {% if ps.ready %}<span class="text-success">✓</span>{% else %}<span class="text-warning">○</span>{% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    <p class="mb-0">
+                        Общий статус:
+                        {% if protocol_status.overall_ready %}
+                        <span class="text-success">есть итоги в финальном протоколе</span>
+                        {% else %}
+                        <span class="text-warning">нет строк с суммой в финальном протоколе</span>
+                        {% endif %}
+                    </p>
+                    {% else %}
+                    <p class="text-muted mb-0">Нет дисциплин — нечего экспортировать.</p>
+                    {% endif %}
+                </div>
+                <p id="protocolGenMessage" class="small mt-2 mb-0 text-muted"></p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function addDiscipline(compName) {
+    const disciplineKey = document.getElementById('discipline_select').value;
+    if (!disciplineKey) {
+        alert('Выберите дисциплину');
+        return;
+    }
+
+    // Добавляем кнопке состояние загрузки
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Добавление...';
+
+    fetch(`/admin/${compName}/add-discipline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ discipline_key: disciplineKey })
+    })
+    .then(r => {
+        if (!r.ok) throw new Error('Network response was not ok');
+        return r.json();
+    })
+    .then((data) => {
+        // Плавное затухание перед перезагрузкой
+        const addCard = document.querySelector('.card:has(#discipline_select)');
+        if (addCard) {
+            addCard.style.transition = 'all 0.3s ease-out';
+            addCard.style.opacity = '0';
+        }
+
+        setTimeout(() => {
+            location.reload();
+        }, 300);
+    })
+    .catch(e => {
+        console.error('Add discipline failed:', e);
+        btn.disabled = false;
+        btn.innerHTML = '➕ Добавить';
+    });
+}
+
+function removeDiscipline(compName, disciplineKey) {
+    if (confirm('Удалить дисциплину? Все данные будут потеряны.')) {
+        // Получаем строку таблицы для анимации
+        const row = event.target.closest('tr');
+
+        // Добавляем класс для анимации удаления
+        row.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
+        row.style.opacity = '0';
+        row.style.transform = 'translateX(-100%)';
+
+        fetch(`/admin/${compName}/remove-discipline`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ discipline_key: disciplineKey })
+        })
+        .then(r => {
+            if (!r.ok) throw new Error('Network response was not ok');
+            return r.json();
+        })
+        .then((data) => {
+            // Плавное затухание перед перезагрузкой
+            setTimeout(() => {
+                location.reload();
+            }, 400);
+        })
+        .catch(e => {
+            // Восстанавливаем строку при ошибке
+            row.style.opacity = '1';
+            row.style.transform = 'translateX(0)';
+            console.error('Delete failed:', e);
+        });
+    }
+}
+
+function generateProtocols(compName, disciplineKey, triggerEl) {
+    const msg = document.getElementById('protocolGenMessage');
+    const busy = triggerEl || null;
+    if (busy) {
+        busy.disabled = true;
+    }
+    if (msg) {
+        msg.textContent = 'Генерация…';
+    }
+
+    const body = disciplineKey ? JSON.stringify({ discipline_key: disciplineKey }) : JSON.stringify({});
+
+    fetch(`/admin/${compName}/generate-protocols`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+    })
+        .then((r) => r.json())
+        .then((data) => {
+            if (data.success) {
+                if (msg) {
+                    msg.textContent = 'Готово: файлы обновлены.';
+                }
+                if (data.readiness) {
+                    refreshProtocolStatusUI(data.readiness);
+                }
+            } else {
+                if (msg) {
+                    msg.textContent = data.message || 'Ошибка генерации';
+                }
+            }
+        })
+        .catch((e) => {
+            if (msg) {
+                msg.textContent = 'Ошибка сети: ' + e;
+            }
+        })
+        .finally(() => {
+            if (busy) {
+                busy.disabled = false;
+            }
+        });
+}
+
+function stageAction(compName, disciplineKey, action) {
+    const msg = document.getElementById('protocolGenMessage');
+    let payload = { action };
+    if (action === 'open_final') {
+        const userN = prompt('Сколько пар перевести в финал?', '3');
+        if (userN === null) return;
+        const topN = parseInt(userN, 10);
+        if (!topN || topN < 1) {
+            alert('Введите корректное число');
+            return;
+        }
+        payload.top_n = topN;
+    }
+    fetch(`/admin/${compName}/${disciplineKey}/stage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    })
+        .then((r) => r.json())
+        .then((data) => {
+            if (data.success) {
+                if (msg) msg.textContent = 'Этап обновлен';
+                setTimeout(() => location.reload(), 350);
+            } else {
+                alert(data.error || 'Ошибка смены этапа');
+            }
+        })
+        .catch((e) => alert('Ошибка сети: ' + e));
+}
+
+function refreshProtocolStatusUI(status) {
+    const list = document.getElementById('protocolStatusList');
+    if (!list || !status.disciplines) {
+        return;
+    }
+    list.innerHTML = '';
+    status.disciplines.forEach((ps) => {
+        const li = document.createElement('li');
+        li.className = 'mb-1';
+        li.dataset.disc = ps.key;
+        const mark = ps.ready
+            ? '<span class="text-success">✓</span>'
+            : '<span class="text-warning">○</span>';
+        li.innerHTML = `<strong>${ps.key}</strong>: пар в финале ${ps.pairs_registered}, с суммой ${ps.final_with_total}, файлов судейских ${ps.judge_protocol_files} ${mark}`;
+        list.appendChild(li);
+    });
+    const overall = document.querySelector('#protocolStatusBlock p.mb-0');
+    if (overall && status.overall_ready !== undefined) {
+        overall.innerHTML =
+            'Общий статус: ' +
+            (status.overall_ready
+                ? '<span class="text-success">есть итоги в финальном протоколе</span>'
+                : '<span class="text-warning">нет строк с суммой в финальном протоколе</span>');
+    }
+}
+
+function toggleCompetition(compName, status) {
+    const newStatus = status === 'open' ? 'close' : 'open';
+    fetch(`/admin/${compName}/${newStatus}`, {
+        method: 'POST'
+    })
+    .then(r => r.json())
+    .then((data) => {
+        alert(data.message);
+        location.reload();
+    })
+    .catch(e => alert('Ошибка: ' + e));
+}
+
+function setMainTablo(compName) {
+    const select = document.getElementById('mainTabloSelect');
+    const disciplineKey = select.value;
+
+    fetch(`/admin/${compName}/set-main-tablo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ discipline_key: disciplineKey })
+    })
+    .then(r => r.json())
+    .then((data) => {
+        if (data.success) {
+            // Показываем уведомление
+            const msg = disciplineKey ?
+                `Главное табло установлено на: ${select.options[select.selectedIndex].text}` :
+                'Главное табло отключено';
+
+            // Создаем временное уведомление
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-success alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3';
+            alert.style.zIndex = '9999';
+            alert.innerHTML = `
+                ${msg}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            document.body.appendChild(alert);
+
+            // Автоматически скрываем через 3 секунды
+            setTimeout(() => {
+                alert.classList.remove('show');
+                setTimeout(() => alert.remove(), 150);
+            }, 3000);
+        } else {
+            alert('Ошибка: ' + (data.message || 'Неизвестная ошибка'));
+        }
+    })
+    .catch(e => alert('Ошибка сети: ' + e));
+}
+
+// Добавляем стили для анимации
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideInDown {
+        from {
+            opacity: 0;
+            transform: translateY(-20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @keyframes slideOutLeft {
+        from {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        to {
+            opacity: 0;
+            transform: translateX(-100%);
+        }
+    }
+
+    @keyframes fadeOut {
+        from {
+            opacity: 1;
+        }
+        to {
+            opacity: 0;
+        }
+    }
+
+    .card {
+        animation: slideInDown 0.3s ease-out;
+    }
+
+    tr {
+        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    tr:hover {
+        background-color: rgba(0, 0, 0, 0.02);
+    }
+
+    tr.deleting {
+        animation: slideOutLeft 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .card.removing {
+        animation: fadeOut 0.3s ease-out;
+    }
+`;
+document.head.appendChild(style);
+</script>
+{% endblock %}

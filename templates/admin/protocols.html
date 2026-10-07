@@ -1,0 +1,73 @@
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">📄 Генерация Протоколов</h5>
+            </div>
+            <div class="card-body">
+                <p>Сгенерируйте полный пакет протоколов соревнования в форматах Excel и PDF.</p>
+                
+                <button onclick="generateProtocols('{{ comp_name }}')" 
+                        class="btn btn-accent">
+                    📤 Сгенерировать Протоколы
+                </button>
+                
+                <div id="protocolsResult" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function generateProtocols(compName) {
+    const btn = event.target;
+    const resultDiv = document.getElementById('protocolsResult');
+    
+    // Состояние загрузки
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Генерация...';
+    resultDiv.innerHTML = '';
+    
+    fetch(`/admin/${compName}/generate-protocols`, {
+        method: 'POST'
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            let html = '<div class="alert alert-success">';
+            html += '<h6>✅ Протоколы успешно сгенерированы!</h6>';
+            html += '<div class="mt-2">';
+            
+            // Ссылки на основные файлы
+            if (data.files.main_excel) {
+                html += `<p><a href="/competitions/${data.files.main_excel}" class="link-body-emphasis" download><i class="bi bi-file-earmark-excel"></i> Основной протокол (Excel)</a></p>`;
+            }
+            if (data.files.main_pdf) {
+                html += `<p><a href="/competitions/${data.files.main_pdf}" class="link-body-emphasis" download><i class="bi bi-file-earmark-pdf"></i> Основной протокол (PDF)</a></p>`;
+            }
+            
+            // Ссылки на детальные файлы
+            if (data.files.details_excel) {
+                html += `<p><a href="/competitions/${data.files.details_excel}" class="link-body-emphasis" download><i class="bi bi-file-earmark-excel"></i> Детальные оценки (Excel)</a></p>`;
+            }
+            if (data.files.details_pdf) {
+                html += `<p><a href="/competitions/${data.files.details_pdf}" class="link-body-emphasis" download><i class="bi bi-file-earmark-pdf"></i> Детальные оценки (PDF)</a></p>`;
+            }
+            
+            html += '</div>';
+            html += '</div>';
+            
+            resultDiv.innerHTML = html;
+        } else {
+            resultDiv.innerHTML = `<div class="alert alert-danger">❌ Ошибка: ${data.message}</div>`;
+        }
+    })
+    .catch(e => {
+        resultDiv.innerHTML = `<div class="alert alert-danger">❌ Ошибка сети: ${e.message}</div>`;
+    })
+    .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = '📤 Сгенерировать Протоколы';
+    });
+}
+</script>
