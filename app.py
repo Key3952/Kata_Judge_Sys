@@ -266,10 +266,8 @@ def serve_competition_files(filename):
 
 @app.route('/')
 def index():
-    """Главная страница"""
-    if session.get('admin'):
-        return redirect(url_for('admin_dashboard'))
-    return redirect(url_for('public_dashboard'))
+    """Главная страница — публичная панель со списком активных турниров"""
+    return public_dashboard()
 
 
 @app.route('/admin/login', methods=['GET', 'POST'])
