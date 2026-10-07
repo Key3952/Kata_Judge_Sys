@@ -990,7 +990,8 @@ def generate_competition_protocols(
                 continue
             payload = _collect_discipline_payload(comp_path, comp_display_name, dk, tmap)
             files = _save_discipline_protocol(comp_path, payload)
-            generated["disciplines"][dk] = [files["xlsx"], files["pdf"], files["csv"]]
+            # files содержит xlsx/pdf и (опционально) csv — добавляем только существующие
+            generated["disciplines"][dk] = [f for f in files.values() if f and os.path.isfile(f)]
 
         # итоги в results/: копии ТОЛЬКО финальных протоколов каждой дисциплины + индекс
         results_dir = os.path.join(comp_path, "results")

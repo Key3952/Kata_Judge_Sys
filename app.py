@@ -3,7 +3,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
 from datetime import datetime
-from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer
+from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer, _csv_lock
 from scoring import calculate_pair_final_score
 import json
 
@@ -306,6 +306,193 @@ def admin_dashboard():
     
     competitions.sort(reverse=True)
     return render_template('admin_dashboard.html', competitions=competitions)
+
+
+@app.route('/data-editor')
+def data_editor():
+    """Веб-редактор данных (реестры участников и судей)"""
+    if not session.get('admin'):
+        return redirect(url_for('admin_login'))
+    return render_template('data_editor.html')
+
+
+# ---------- API редактора данных ----------
+
+_PARTICIPANTS_HEADERS = ['ФИО', 'год рождения', 'разряд', 'кю', 'СШ', 'тренер']
+_JUDGES_HEADERS = ['ФИО']
+
+
+def _rows_with_ids(rows):
+    """Добавляет стабильный числовой id к строкам CSV (порядковый номер)."""
+    return [dict(row, id=i + 1) for i, row in enumerate(rows)]
+
+
+@app.route('/api/data/participants', methods=['GET'])
+def api_data_participants_list():
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    search = (request.args.get('search') or '').strip().lower()
+    rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+    if search:
+        rows = [r for r in rows
+                if search in (r.get('ФИО', '') or '').lower()
+                or search in (r.get('год рождения', '') or '')]
+    return jsonify(_rows_with_ids(rows))
+
+
+@app.route('/api/data/participants', methods=['POST'])
+def api_data_participants_add():
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    data = request.get_json(silent=True) or {}
+    fio = (data.get('ФИО') or '').strip()
+    birth_year = str(data.get('год рождения') or '').strip()
+    if not fio or not birth_year:
+        return jsonify({'success': False, 'error': 'Заполните ФИО и год рождения'})
+    row = {
+        'ФИО': fio,
+        'год рождения': birth_year,
+        'разряд': (data.get('разряд') or '').strip(),
+        'кю': (data.get('кю') or '').strip(),
+        'СШ': (data.get('СШ') or '').strip(),
+        'тренер': (data.get('тренер') or '').strip(),
+    }
+    try:
+        with _csv_lock:
+            existing = CSVManager.read_csv(PARTICIPANTS_CSV)
+            for e in existing:
+                if (e.get('ФИО', '').strip().lower() == fio.lower()
+                        and e.get('год рождения', '').strip() == birth_year):
+                    return jsonify({'success': False,
+                                    'error': 'Участник с таким ФИО и годом рождения уже есть'})
+            CSVManager.add_row(PARTICIPANTS_CSV, row, _PARTICIPANTS_HEADERS)
+        return jsonify({'success': True})
+    except Exception as exc:
+        app.logger.error('api_data_participants_add: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/data/participants/<int:row_id>', methods=['PUT'])
+def api_data_participants_update(row_id):
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    data = request.get_json(silent=True) or {}
+    fio = (data.get('ФИО') or '').strip()
+    if not fio:
+        return jsonify({'success': False, 'error': 'ФИО обязательно'})
+    try:
+        with _csv_lock:
+            rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+            if not (1 <= row_id <= len(rows)):
+                return jsonify({'success': False, 'error': 'Запись не найдена'})
+            old = rows[row_id - 1]
+            rows[row_id - 1] = {
+                'ФИО': fio,
+                'год рождения': str(data.get('год рождения') or old.get('год рождения', '')).strip(),
+                'разряд': (data.get('разряд') or '').strip(),
+                'кю': (data.get('кю') or '').strip(),
+                'СШ': (data.get('СШ') or '').strip(),
+                'тренер': (data.get('тренер') or '').strip(),
+            }
+            CSVManager.write_csv(PARTICIPANTS_CSV, rows, _PARTICIPANTS_HEADERS)
+        return jsonify({'success': True})
+    except Exception as exc:
+        app.logger.error('api_data_participants_update: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/data/participants/<int:row_id>', methods=['DELETE'])
+def api_data_participants_delete(row_id):
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    try:
+        with _csv_lock:
+            rows = CSVManager.read_csv(PARTICIPANTS_CSV)
+            if not (1 <= row_id <= len(rows)):
+                return jsonify({'success': False, 'error': 'Запись не найдена'})
+            del rows[row_id - 1]
+            CSVManager.write_csv(PARTICIPANTS_CSV, rows, _PARTICIPANTS_HEADERS)
+        return jsonify({'success': True})
+    except Exception as exc:
+        app.logger.error('api_data_participants_delete: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/data/judges', methods=['GET'])
+def api_data_judges_list():
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    search = (request.args.get('search') or '').strip().lower()
+    rows = CSVManager.read_csv(JUDGES_CSV)
+    if search:
+        rows = [r for r in rows if search in (r.get('ФИО', '') or '').lower()]
+    return jsonify(_rows_with_ids(rows))
+
+
+@app.route('/api/data/judges', methods=['POST'])
+def api_data_judges_add():
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    data = request.get_json(silent=True) or {}
+    fio = (data.get('ФИО') or '').strip()
+    if not fio:
+        return jsonify({'success': False, 'error': 'Заполните ФИО'})
+    try:
+        with _csv_lock:
+            existing = CSVManager.read_csv(JUDGES_CSV)
+            for e in existing:
+                if e.get('ФИО', '').strip().lower() == fio.lower():
+                    return jsonify({'success': False, 'error': 'Судья с таким ФИО уже есть'})
+            CSVManager.add_row(JUDGES_CSV, {'ФИО': fio}, _JUDGES_HEADERS)
+        return jsonify({'success': True})
+    except Exception as exc:
+        app.logger.error('api_data_judges_add: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/data/judges/<int:row_id>', methods=['DELETE'])
+def api_data_judges_delete(row_id):
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    try:
+        with _csv_lock:
+            rows = CSVManager.read_csv(JUDGES_CSV)
+            if not (1 <= row_id <= len(rows)):
+                return jsonify({'success': False, 'error': 'Запись не найдена'})
+            del rows[row_id - 1]
+            CSVManager.write_csv(JUDGES_CSV, rows, _JUDGES_HEADERS)
+        return jsonify({'success': True})
+    except Exception as exc:
+        app.logger.error('api_data_judges_delete: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/data/competitions', methods=['GET'])
+def api_data_competitions_list():
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    items = []
+    if os.path.exists(COMPETITIONS_BASE_DIR):
+        for folder in sorted(os.listdir(COMPETITIONS_BASE_DIR), reverse=True):
+            comp_path = os.path.join(COMPETITIONS_BASE_DIR, folder)
+            if not os.path.isdir(comp_path):
+                continue
+            cfg = {}
+            cfg_file = os.path.join(comp_path, 'config.json')
+            if os.path.exists(cfg_file):
+                try:
+                    with open(cfg_file, 'r', encoding='utf-8') as f:
+                        cfg = json.load(f) or {}
+                except Exception:
+                    cfg = {}
+            items.append({
+                'name': cfg.get('name', folder),
+                'folder_name': folder,
+                'created_at': cfg.get('created'),
+                'status': cfg.get('status', 'open'),
+            })
+    return jsonify(items)
+
 
 
 @app.route('/config', methods=['GET', 'POST'])
@@ -1305,6 +1492,28 @@ def tablo(comp_name, kata_key):
             })
         return results
     
+    def merge_with_pairs(base_list):
+        """Гарантия: ни одна заявленная пара не исчезает с табло, даже без оценок."""
+        by_num = {int(r.get('pair_number', 0)): r for r in base_list}
+        merged = []
+        for pair in pairs:
+            pn = int(pair.get('номер пары', 0))
+            if pn in by_num:
+                merged.append(by_num[pn])
+            else:
+                merged.append({
+                    'pair_number': pn,
+                    'tori': encode_participant_for_protocol(pair, 'Тори'),
+                    'uke': encode_participant_for_protocol(pair, 'Уке'),
+                    'judge_scores': [None] * len(effective_positions),
+                    'final_score': None,
+                })
+        declared = {int(p.get('номер пары', 0)) for p in pairs}
+        for r in base_list:
+            if int(r.get('pair_number', 0)) not in declared:
+                merged.append(r)
+        return merged
+
     if os.path.exists(final_protocol_path):
         existing_results = []
         rows_existing = CSVManager.read_csv(final_protocol_path)
@@ -1330,7 +1539,7 @@ def tablo(comp_name, kata_key):
                 'place': int(row.get('Место', 0)) if str(row.get('Место', '')).strip().isdigit() else None,
             })
         if existing_results:
-            base_results = existing_results
+            base_results = merge_with_pairs(existing_results)
         else:
             base_results = build_results_from_pairs()
     else:
