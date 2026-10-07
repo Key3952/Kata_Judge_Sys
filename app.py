@@ -2,6 +2,9 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
+import csv
+import io
+from typing import Dict
 from datetime import datetime
 from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer, _csv_lock
 from scoring import calculate_pair_final_score
@@ -464,6 +467,202 @@ def api_data_judges_delete(row_id):
         return jsonify({'success': True})
     except Exception as exc:
         app.logger.error('api_data_judges_delete: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+# ---------- Импорт базы участников из CSV ----------
+
+_IMPORT_ALIASES = {
+    'фио': 'ФИО', 'ф': 'ФИО', 'ф.и.о': 'ФИО', 'name': 'ФИО', 'fio': 'ФИО',
+    'год': 'год рождения', 'год рождения': 'год рождения', 'года рождения': 'год рождения',
+    'год рожд': 'год рождения', 'birth_year': 'год рождения', 'birthyear': 'год рождения',
+    'рождение': 'год рождения', 'возраст': 'год рождения',
+    'дата': 'год рождения', 'дата рождения': 'год рождения', 'date': 'год рождения',
+    'birthdate': 'год рождения', 'date of birth': 'год рождения', 'др': 'год рождения',
+    'разряд': 'разряд', 'спортразряд': 'разряд', 'rank': 'разряд',
+    'кю': 'кю', 'kyu': 'кю', 'кью': 'кю',
+    'сш': 'СШ', 'школа': 'СШ', 'sports_school': 'СШ', 'спортивная школа': 'СШ',
+    'тренер': 'тренер', 'coach': 'тренер',
+}
+
+
+def _normalize_import_header(h: str) -> str:
+    key = (h or '').strip().lower().rstrip(':').replace('\ufeff', '')
+    return _IMPORT_ALIASES.get(key, '')
+
+
+def _extract_year(value: str) -> str:
+    """Возвращает 4-значный год из строки ('2001', '14.03.2001', '2001 г.р.') или ''."""
+    import re as _re
+    m = _re.search(r'(19|20)\d{2}', value or '')
+    return m.group(0) if m else (value or '').strip()
+
+
+def _sniff_csv_dialect(sample: str):
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=',;\t')
+    except Exception:
+        return csv.excel
+
+
+@app.route('/api/data/participants/import', methods=['POST'])
+def api_data_participants_import():
+    """Импорт базы участников из CSV-файла (Excel/LibreOffice, , ; \\t, UTF-8/CP1251)."""
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    file = request.files.get('file')
+    if not file or not file.filename:
+        return jsonify({'success': False, 'error': 'Файл не выбран'})
+    if not file.filename.lower().endswith('.csv'):
+        return jsonify({'success': False, 'error': 'Ожидается файл .csv'})
+    raw = file.read(5 * 1024 * 1024)  # лимит 5 МБ
+    if len(raw) >= 5 * 1024 * 1024:
+        return jsonify({'success': False, 'error': 'Файл слишком большой (макс. 5 МБ)'})
+    text = None
+    for enc in ('utf-8-sig', 'utf-8', 'cp1251'):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        return jsonify({'success': False, 'error': 'Не удалось определить кодировку файла'})
+
+    dialect = _sniff_csv_dialect(text[:4096])
+    rows_in = list(csv.DictReader(io.StringIO(text), dialect=dialect))
+    if not rows_in:
+        return jsonify({'success': False, 'error': 'Файл пуст или не содержит строк данных'})
+
+    # маппинг колонок источника -> канонические поля
+    src_fields = [f for f in (rows_in[0].keys() if rows_in[0] else []) if f is not None]
+    col_map: Dict[str, str] = {}
+    for h in src_fields:
+        canon = _normalize_import_header(h)
+        if canon and canon not in col_map.values():
+            col_map[h] = canon
+    if 'ФИО' not in col_map.values():
+        return jsonify({'success': False,
+                        'error': 'В файле не найдена колонка ФИО. Колонки: ' + ', '.join(src_fields)})
+
+    mode = (request.form.get('mode') or 'merge').strip()  # merge | replace | skip_dupes
+    new_rows, updated, skipped = [], 0, []
+    seen_keys = set()
+    for r in rows_in:
+        fio = (r.get(next((h for h, c in col_map.items() if c == 'ФИО'), '')) or '').strip()
+        if not fio:
+            continue
+        yr_field = next((h for h, c in col_map.items() if c == 'год рождения'), '')
+        year = _extract_year(r.get(yr_field, '') if yr_field else '')
+        row = {'ФИО': fio, 'год рождения': year}
+        for canon in ('разряд', 'кю', 'СШ', 'тренер'):
+            h = next((h for h, c in col_map.items() if c == canon), '')
+            row[canon] = (r.get(h, '') or '').strip() if h else ''
+        key = (fio.lower(), year)
+        if key in seen_keys:
+            skipped.append(f"{fio} ({year}) — дубль внутри файла")
+            continue
+        seen_keys.add(key)
+        new_rows.append(row)
+
+    if not new_rows:
+        return jsonify({'success': False, 'error': 'В файле нет валидных строк (нужны ФИО и год рождения)'})
+
+    try:
+        with _csv_lock:
+            if mode == 'replace':
+                CSVManager.write_csv(PARTICIPANTS_CSV, new_rows, _PARTICIPANTS_HEADERS)
+                final_rows = new_rows
+                added, dupes, updated = len(new_rows), 0, 0
+            else:
+                existing = CSVManager.read_csv(PARTICIPANTS_CSV)
+                index = {}
+                for i, e in enumerate(existing):
+                    k = ((e.get('ФИО') or '').strip().lower(),
+                         _extract_year(e.get('год рождения') or ''))
+                    index[k] = i
+                added = dupes = updated = 0
+                final_rows = existing
+                for row in new_rows:
+                    k = (row['ФИО'].lower(), row['год рождения'])
+                    if k in index:
+                        i = index[k]
+                        if mode == 'skip_dupes':
+                            dupes += 1
+                            continue
+                        old = final_rows[i]
+                        changed = False
+                        for field in ('разряд', 'кю', 'СШ', 'тренер'):
+                            if row[field] and row[field] != (old.get(field) or ''):
+                                old[field] = row[field]
+                                changed = True
+                        if changed:
+                            updated += 1
+                    else:
+                        final_rows.append(row)
+                        index[k] = len(final_rows) - 1
+                        added += 1
+                if added or updated:
+                    CSVManager.write_csv(PARTICIPANTS_CSV, final_rows, _PARTICIPANTS_HEADERS)
+        msg = f"Добавлено: {added}"
+        if mode != 'replace':
+            msg += f", обновлено: {updated}, пропущено дублей: {dupes}"
+        if skipped:
+            msg += f", повторы в файле: {len(skipped)}"
+        return jsonify({'success': True, 'added': added, 'updated': updated,
+                        'duplicates': dupes, 'total': len(new_rows), 'message': msg})
+    except Exception as exc:
+        app.logger.error('api_data_participants_import: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/data/judges/import', methods=['POST'])
+def api_data_judges_import():
+    """Импорт базы судей из CSV-файла."""
+    if not session.get('admin'):
+        return jsonify({'error': 'Не авторизован'}), 401
+    file = request.files.get('file')
+    if not file or not file.filename:
+        return jsonify({'success': False, 'error': 'Файл не выбран'})
+    if not file.filename.lower().endswith('.csv'):
+        return jsonify({'success': False, 'error': 'Ожидается файл .csv'})
+    raw = file.read(5 * 1024 * 1024)
+    text = None
+    for enc in ('utf-8-sig', 'utf-8', 'cp1251'):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        return jsonify({'success': False, 'error': 'Не удалось определить кодировку файла'})
+    dialect = _sniff_csv_dialect(text[:4096])
+    rows_in = list(csv.DictReader(io.StringIO(text), dialect=dialect))
+    if not rows_in:
+        return jsonify({'success': False, 'error': 'Файл пуст'})
+    src_fields = [f for f in (rows_in[0].keys() if rows_in[0] else []) if f is not None]
+    fio_col = next((h for h in src_fields if _normalize_import_header(h) == 'ФИО'), src_fields[0])
+
+    names, seen = [], set()
+    for r in rows_in:
+        fio = (r.get(fio_col) or '').strip()
+        if fio and fio.lower() not in seen:
+            seen.add(fio.lower())
+            names.append({'ФИО': fio})
+    if not names:
+        return jsonify({'success': False, 'error': 'Не найдено ни одного ФИО судьи'})
+    try:
+        with _csv_lock:
+            existing = CSVManager.read_csv(JUDGES_CSV)
+            have = {(e.get('ФИО') or '').strip().lower() for e in existing}
+            to_add = [n for n in names if n['ФИО'].lower() not in have]
+            if to_add:
+                all_rows = existing + to_add
+                CSVManager.write_csv(JUDGES_CSV, all_rows, _JUDGES_HEADERS)
+        return jsonify({'success': True, 'added': len(to_add),
+                        'duplicates': len(names) - len(to_add),
+                        'message': f"Добавлено: {len(to_add)}, уже было: {len(names) - len(to_add)}"})
+    except Exception as exc:
+        app.logger.error('api_data_judges_import: %s', exc)
         return jsonify({'success': False, 'error': str(exc)}), 500
 
 

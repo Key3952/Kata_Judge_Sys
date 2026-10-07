@@ -28,8 +28,13 @@
                         <i class="bi bi-plus-lg"></i> Добавить участника
                     </button>
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-4">
                     <input type="text" id="participantSearch" class="form-control" placeholder="Поиск по ФИО или году рождения...">
+                </div>
+                <div class="col-md-2 text-end">
+                    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#importModal" onclick="prepareImport('participants')">
+                        <i class="bi bi-upload"></i> Импорт CSV
+                    </button>
                 </div>
             </div>
             
@@ -59,8 +64,13 @@
                         <i class="bi bi-plus-lg"></i> Добавить судью
                     </button>
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-4">
                     <input type="text" id="judgeSearch" class="form-control" placeholder="Поиск по ФИО...">
+                </div>
+                <div class="col-md-2 text-end">
+                    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#importModal" onclick="prepareImport('judges')">
+                        <i class="bi bi-upload"></i> Импорт CSV
+                    </button>
                 </div>
             </div>
             
@@ -218,11 +228,93 @@
     </div>
 </div>
 
+<!-- Модальное окно: Импорт из CSV -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Импорт из CSV — <span id="importTargetName">участники</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">CSV-файл (Excel/LibreOffice, разделители , ; таб; кодировка UTF-8 или CP1251)</label>
+                    <input type="file" class="form-control" id="importFile" accept=".csv">
+                </div>
+                <div class="mb-3" id="importModeGroup">
+                    <label class="form-label">Режим импорта участников</label>
+                    <select class="form-select" id="importMode">
+                        <option value="merge">Объединить (добавить новых, обновить непустые поля существующих)</option>
+                        <option value="skip_dupes">Только новые (существующих не трогать)</option>
+                        <option value="replace">Заменить базу целиком</option>
+                    </select>
+                </div>
+                <div class="alert alert-info py-2 small mb-0">
+                    Ожидаемые колонки: <b>ФИО</b>, <b>год рождения</b> (или полная дата — сохранится только год),
+                    разряд, кю, СШ, тренер. Названия колонок распознаются автоматически.
+                </div>
+                <div id="importResult" class="mt-3 small"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-primary" id="importBtn" onclick="runImport()">Импортировать</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 // Глобальные переменные
 let currentParticipants = [];
 let currentJudges = [];
 let currentCompetitions = [];
+let importTarget = 'participants';
+
+function prepareImport(target) {
+    importTarget = target;
+    document.getElementById('importTargetName').textContent =
+        target === 'participants' ? 'участники' : 'судьи';
+    document.getElementById('importModeGroup').style.display =
+        target === 'participants' ? '' : 'none';
+    document.getElementById('importResult').innerHTML = '';
+    document.getElementById('importFile').value = '';
+}
+
+function runImport() {
+    const fileInput = document.getElementById('importFile');
+    if (!fileInput.files.length) {
+        document.getElementById('importResult').innerHTML =
+            '<div class="alert alert-warning py-2">Выберите CSV-файл</div>';
+        return;
+    }
+    const fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+    fd.append('mode', document.getElementById('importMode').value);
+
+    const btn = document.getElementById('importBtn');
+    btn.disabled = true;
+    btn.textContent = 'Импорт...';
+
+    fetch(`/api/data/${importTarget}/import`, { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(result => {
+            btn.disabled = false;
+            btn.textContent = 'Импортировать';
+            const box = document.getElementById('importResult');
+            if (result.success) {
+                box.innerHTML = `<div class="alert alert-success py-2">${result.message}</div>`;
+                if (importTarget === 'participants') loadParticipants(); else loadJudges();
+            } else {
+                box.innerHTML = `<div class="alert alert-danger py-2">Ошибка: ${escapeHtml(result.error || 'неизвестно')}</div>`;
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.textContent = 'Импортировать';
+            document.getElementById('importResult').innerHTML =
+                `<div class="alert alert-danger py-2">Ошибка запроса: ${err}</div>`;
+        });
+}
 
 // Загрузка данных при инициализации
 document.addEventListener('DOMContentLoaded', function() {
