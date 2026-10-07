@@ -60,17 +60,35 @@ def protocol_from_raw(raw: dict, techniques_count: int = MAX_TECHNIQUES) -> Judg
     """
     weights = PENALTY_WEIGHTS
     proto = JudgeProtocol()
-    techs = raw.get("techniques") or []
+    techs = raw.get("techniques") or raw.get("details") or []
+    if isinstance(techs, dict):  # {название_техники: {...}} — приводим к списку
+        techs = [techs.get(name) or {} for name in techs.values()] \
+            if all(isinstance(v, dict) for v in techs.values()) else list(techs.values())
     for i in range(techniques_count):
         src = techs[i] if i < len(techs) else {}
+        if not isinstance(src, dict):
+            src = {}
         flags = src.get("flags") or []
         penalty = float(src.get("penalty", 0.0) or 0.0)
         penalty += sum(float(weights.get(f, 0.0)) for f in flags)
+        # Формат формы судьи judge_form.html: количество активных штрафов
+        # каждого вида (m1/m2/med/big —Minor/Major ошибки, c_plus/c_minus —
+        # коррекции). Каждый minor-кнопка = 0.5, major = 1.0, correction = 0.5.
+        count_penalty = (
+            int(float(src.get("m1", 0) or 0)) * 0.5
+            + int(float(src.get("m2", 0) or 0)) * 0.5
+            + int(float(src.get("med", 0) or 0)) * 1.0
+            + int(float(src.get("big", 0) or 0)) * 1.0
+            + abs(int(float(src.get("c_plus", 0) or 0))) * 0.5
+            + abs(int(float(src.get("c_minus", 0) or 0))) * 0.5
+        )
+        penalty += count_penalty
+        forgotten = bool(src.get("forgotten")) or "forgotten" in flags
         proto.techniques.append(
             TechniqueResult(
                 index=i + 1,
                 penalty=round(penalty, 2),
-                forgotten=bool(src.get("forgotten")) or "forgotten" in flags,
+                forgotten=forgotten,
                 not_performed=bool(src.get("not_performed")),
             )
         )

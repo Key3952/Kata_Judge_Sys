@@ -394,14 +394,17 @@ class DBService:
     # ---------- Судейские списки (п.6) ----------
 
     def save_judge_list(self, discipline_id: int, stage: str,
-                        judges: list[dict]) -> None:
-        """judges: [{"name":..., "category":..., "position":...}] — upsert
-        судей в реестр + привязка к дисциплине."""
+                        judges: list) -> None:
+        """judges: [{"name"|"ФИО":..., "category":..., "position":...}] или
+        просто список имён (str) — upsert судей в реестр + привязка к
+        дисциплине. Поддерживает оба формата для совместимости с UI."""
         existing = {e.judge_id: e for e in JudgeListEntry.query.filter_by(
             discipline_id=discipline_id, stage=stage).all()}
         keep: set[int] = set()
         for pos, item in enumerate(judges, start=1):
-            name = (item.get("name") or "").strip()
+            if isinstance(item, str):
+                item = {"name": item}
+            name = (item.get("name") or item.get("ФИО") or "").strip()
             if not name:
                 continue
             j = self.upsert_judge(name, category=item.get("category"))

@@ -367,21 +367,64 @@ def api_export_pdf() -> Response:
 def on_subscribe(payload: dict) -> None:
     from flask_socketio import join_room
 
-    comp = payload.get("competition", "default")
-    kata = payload.get("kata", "")
+    comp = (payload.get("comp_name") or payload.get("competition")
+            or current_competition())
+    kata = _norm_kata(payload.get("kata") or payload.get("discipline_key") or "")
     stage = payload.get("stage", "qual")
     join_room(f"tablo:{comp}:{kata}:{stage}")
     join_room(f"tablo:{comp}")
-    emit_rows(comp, kata, stage)
+    emit_board(comp, kata, stage)
 
 
-def emit_rows(comp: str, kata: str, stage: str) -> None:
-    from flask_socketio import emit as sio_emit
+@socketio.on("join_tablo")
+def on_join_tablo(payload: dict) -> None:
+    """main_tablo_dynamic.html: подписка на все табло соревнования."""
+    from flask_socketio import join_room
 
-    sio_emit("leaderboard", {
-        "rows": svc.build_leaderboard(comp, kata, stage),
-        "meta": svc.get_competition_meta(comp),
-    })
+    comp = payload.get("comp_name") or current_competition()
+    join_room(f"tablo:{comp}")
+    meta = svc.get_competition_meta(comp)
+    kata = _norm_kata(meta.get("main_tablo_discipline") or "")
+    stage = meta.get("current_stage", "qual")
+    if kata:
+        socketio.emit("tablo_update", {"comp_name": comp,
+                                       "discipline_key": kata},
+                      room=f"tablo:{comp}")
+
+
+@socketio.on("leave_tablo")
+def on_leave_tablo(payload: dict) -> None:
+    from flask_socketio import leave_room
+
+    comp = payload.get("comp_name") or current_competition()
+    leave_room(f"tablo:{comp}")
+
+
+def emit_board(comp: str, kata: str, stage: str) -> None:
+    """Realtime-пуш табло (п.7): обновляет и вкладку табло дисциплины,
+    и главное табло без перезагрузки страницы."""
+    board = svc.build_leaderboard(comp, kata, stage)
+    judges = svc.get_effective_judges(comp, kata, stage)
+    rows = []
+    for r in board:
+        per_judge = svc.list_judge_scores(comp, kata, stage, "",
+                                          r["pair_number"])
+        score_map = {j["name"]: j["total"] for j in per_judge}
+        rows.append({
+            "place": r["place"], "pair_number": r["pair_number"],
+            "tori_cell": {"name": r["tori"].get("name", ""), "detail": None},
+            "uke_cell": {"name": r["uke"].get("name", ""), "detail": None},
+            "judge_scores": [score_map.get(j["name"]) for j in judges],
+            "final_score": r["final_score"],
+        })
+    payload = {"comp_name": comp, "kata": kata, "stage": stage,
+               "rows": rows, "judges": judges,
+               "meta": svc.get_competition_meta(comp)}
+    socketio.emit("leaderboard", payload,
+                  room=f"tablo:{comp}:{kata}:{stage}")
+    socketio.emit("leaderboard", payload, room=f"tablo:{comp}")
+    socketio.emit("tablo_update", {"comp_name": comp, "discipline_key": kata},
+                  room=f"tablo:{comp}")
 
 
 # ---------- HTML-страницы (шаблоны взяты из репозитория) ----------
@@ -430,11 +473,14 @@ def admin_logout() -> Response:
 
 @app.get("/admin")
 @app.get("/admin/dashboard")
+@app.get("/dashboard/admin")
 def admin_dashboard() -> Response:
     if not session.get("is_admin"):
         return redirect(url_for("admin_login"))
     competitions = svc.get_all_competitions()
-    return render_template("admin_dashboard.html", competitions=competitions)
+    # шаблоны ожидают список имён папок (url_for('edit_competition', comp_name=comp))
+    names = [c.get("name", "") for c in competitions]
+    return render_template("admin_dashboard.html", competitions=names)
 
 
 @app.get("/config")
@@ -442,6 +488,8 @@ def admin_dashboard() -> Response:
 @app.get("/competition/config")
 @app.route("/config/competition", endpoint="config_competition")
 def config_page() -> Response:
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_login"))
     comp = current_competition()
     meta = svc.get_competition_meta(comp)
     meta.setdefault("name", meta.get("title") or config.DEFAULT_COMPETITION_TITLE)
@@ -455,7 +503,24 @@ def config_page() -> Response:
             "stage": {"mode": "qual", "status": "open", "final_top_n": 3},
             "stage_label": "Квалификация",
         })
-    return render_template("config.html", config=meta, disciplines=disciplines)
+    return render_template("config.html", config=meta, disciplines=disciplines,
+                           default_path=str(config.COMPETITIONS_DIR))
+
+
+@app.post("/config")
+@app.post("/admin/config")
+@app.post("/competition/config")
+@app.route("/config/competition", methods=["POST"], endpoint="config_competition_post")
+def config_page_post() -> Response:
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_login"))
+    name = (request.form.get("comp_name") or "").strip()
+    if not name:
+        return redirect(url_for("config_competition"))
+    folder = re.sub(r"[^\w\-]+", "_", name)[:80]
+    comp = svc.get_or_create_competition(folder)
+    svc.set_competition_meta(folder, title=name)
+    return redirect(url_for("edit_competition", comp_name=folder))
 
 
 @app.get("/admin/<comp_name>")
@@ -464,32 +529,49 @@ def edit_competition(comp_name: str) -> Response:
     """Страница редактирования соревнования (данные — из БД)."""
     if not session.get("is_admin"):
         return redirect(url_for("admin_login"))
-    svc.get_or_create_competition(comp_name)
+    comp = svc.get_or_create_competition(comp_name)
     meta = svc.get_competition_meta(comp_name)
+    stage_cfg = meta.get("stage", {}) if isinstance(meta.get("stage"), dict) else {}
+    current_stage = meta.get("current_stage", "qual")
     config_ctx = {
         "name": meta.get("title") or comp_name,
         "display_name": meta.get("title") or comp_name,
         "status": meta.get("status", "open"),
         "main_tablo_discipline": meta.get("main_tablo_discipline") or "",
-        "created": meta.get("date") or "",
+        "created": meta.get("date") or meta.get("created") or "",
         "banner": meta.get("subtitle") or "",
     }
     disciplines = []
-    for d in Discipline.query.filter_by(
-            competition_id=svc.get_or_create_competition(comp_name).id).all():
+    for d in Discipline.query.filter_by(competition_id=comp.id).all():
+        stage = {
+            "mode": stage_cfg.get("mode", current_stage),
+            "status": stage_cfg.get("status", "open"),
+            "final_top_n": int(stage_cfg.get("final_top_n",
+                                             meta.get("final_top_n", 3)) or 3),
+            "current_stage": current_stage,
+        }
+        pair_count = len(svc.get_effective_pairs(comp_name, d.kata_key, "qual"))
         disciplines.append({
             "key": d.kata_key, "name": d.display_name or _kata_display(d.kata_key),
-            "pair_count": len(svc.get_effective_pairs(comp_name, d.kata_key, "qual")),
-            "stage": {"mode": "qual", "status": "open",
-                      "final_top_n": meta.get("final_top_n", 3)},
-            "stage_label": "Квалификация",
+            "pair_count": pair_count,
+            "stage": stage,
+            "stage_label": "Финал" if current_stage == "final" else "Квалификация",
         })
     available = [{"key": k, "name": _kata_display(k)}
                  for k in technics.DISCIPLINE_ROWS_BY_KEY]
-    protocol_status = {"disciplines": [
+    final_rows = svc.build_leaderboard(comp_name, "", "final") if disciplines else []
+    disc_ids = {d["key"]: Discipline.query.filter_by(
+        competition_id=comp.id, kata_key=d["key"]).first() for d in disciplines}
+    protocol_status = {"overall_ready": any(
+        r.get("final_score") for r in final_rows),
+        "disciplines": [
         {"key": d["key"], "name": d["name"],
-         "pairs_registered": d["pair_count"] > 0,
-         "judge_protocol_files": [], "ready": False}
+         "pairs_registered": d["pair_count"],
+         "final_with_total": sum(1 for r in final_rows if r.get("final_score")),
+         "judge_protocol_files": (JudgeScore.query.filter_by(
+             discipline_id=disc_ids[d["key"]].id).count()
+             if disc_ids.get(d["key"]) is not None else 0),
+         "ready": d["pair_count"] > 0}
         for d in disciplines]}
     return render_template("edit_competition.html",
                            comp_name=comp_name, config=config_ctx,
