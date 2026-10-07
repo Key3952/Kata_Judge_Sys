@@ -6,7 +6,10 @@ import csv
 import io
 from typing import Dict
 from datetime import datetime
-from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer, _csv_lock
+from csv_manager import (
+    CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer, _csv_lock,
+    extract_birth_year, format_birth_year, birth_year_upper_limit, BIRTH_YEAR_MIN,
+)
 from scoring import calculate_pair_final_score
 import json
 
@@ -40,6 +43,136 @@ def format_date_ru(dt: datetime) -> str:
     return f"{dt.day} {MONTHS_RU.get(dt.month, '')} {dt.year} г."
 
 
+def parse_iso_date(s):
+    """Безопасно разбирает 'ГГГГ-ММ-ДД' в date; None при ошибке."""
+    from datetime import date as _date
+    try:
+        y, m, d = str(s).strip().split('-')
+        return _date(int(y), int(m), int(d))
+    except Exception:
+        return None
+
+
+def format_date_range_ru(start_s, end_s) -> str:
+    """Одна дата или период ('15 марта 2026 г.', '3 – 5 апреля 2026 г.'). '' если пусто."""
+    d1 = parse_iso_date(start_s) if start_s else None
+    d2 = parse_iso_date(end_s) if end_s else None
+    if d1 and d2 and d2 > d1:
+        if d1.month == d2.month and d1.year == d2.year:
+            return f"{d1.day}–{d2.day} {MONTHS_RU.get(d2.month, '')} {d2.year} г."
+        return f"{format_date_ru(d1)} — {format_date_ru(d2)}"
+    if d1:
+        return format_date_ru(d1)
+    if d2:
+        return format_date_ru(d2)
+    return ''
+
+
+def get_competition_dates_label(config: dict) -> str:
+    """Подпись даты соревнования из config.json (event_start / event_end)."""
+    return format_date_range_ru(config.get('event_start', ''), config.get('event_end', ''))
+
+
+# ============ Возрастная категория (субтайтл табло) ============
+
+SUBTITLE_MAX_LEN = 120
+
+
+def get_effective_subtitle(comp_path: str, kata_key: str, config: dict = None) -> str:
+    """Возрастная категория для табло: уровень дисциплины/этапа важнее уровня соревнования."""
+    text = ''
+    if config is None:
+        config_file = os.path.join(comp_path, 'config.json')
+        config = {}
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f) or {}
+            except Exception:
+                config = {}
+    comp_sub = str(config.get('age_category', '') or '').strip()
+    if comp_sub:
+        text = comp_sub
+    try:
+        stage_cfg = ensure_stage_config(comp_path, kata_key)
+        disc_sub = str(stage_cfg.get('age_category', '') or '').strip()
+        if disc_sub:
+            text = disc_sub
+    except Exception:
+        pass
+    return text[:SUBTITLE_MAX_LEN]
+
+
+# ============ Число оцениваемых техник (techniques_count) ============
+
+TECHNIQUES_COUNT_MIN = 5
+TECHNIQUES_COUNT_MAX = 10
+
+
+def clamp_techniques_count(value, total: int):
+    """Возвращает n в допустимом интерфейсом диапазоне [max(5,min(10,total)) .. min(10,total)]
+    либо None, если значение не задано (используется полное число техник ката)."""
+    if value is None or value == '':
+        return None
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    upper = min(TECHNIQUES_COUNT_MAX, max(total, 1))
+    lower = min(TECHNIQUES_COUNT_MIN, upper)
+    return max(lower, min(upper, n))
+
+
+def get_stage_techniques_count(comp_path: str, kata_key: str, stage: str) -> int:
+    """Число оцениваемых техник для этапа (квалификация/финал отдельно).
+    0 = все техники ката."""
+    cfg = ensure_stage_config(comp_path, kata_key)
+    total = len(DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
+    raw = cfg.get('techniques_count_final') if stage == 'final' else cfg.get('techniques_count_prelim')
+    n = clamp_techniques_count(raw, total)
+    if n is None:
+        return total
+    return n
+
+
+def read_stage_techniques_count_raw(comp_path: str, kata_key: str) -> dict:
+    cfg = ensure_stage_config(comp_path, kata_key)
+    return {
+        'prelim': cfg.get('techniques_count_prelim'),
+        'final': cfg.get('techniques_count_final'),
+    }
+
+
+def has_submitted_scores(comp_path: str, kata_key: str, stage: str) -> bool:
+    """Есть ли сданные оценки судей на этапе (файлы протоколов или заполненный итог)."""
+    stage_files = get_stage_files(comp_path, kata_key, stage)
+    protocols_dir = os.path.join(os.path.dirname(stage_files['participants']), 'protocols')
+    if os.path.isdir(protocols_dir):
+        for fn in os.listdir(protocols_dir):
+            if not fn.endswith('.csv'):
+                continue
+            rows = CSVManager.read_csv(os.path.join(protocols_dir, fn))
+            for r in rows:
+                dj = str(r.get('details_json', '') or '').strip()
+                if dj and dj not in ('{}', 'null'):
+                    try:
+                        d = json.loads(dj)
+                    except json.JSONDecodeError:
+                        continue
+                    if any(float(d.get(k, 0) or 0) for k in ('m1', 'm2', 'med', 'big', 'c_minus', 'c_plus')) \
+                            or bool(d.get('forgotten', False)):
+                        return True
+    try:
+        fp = stage_files['final_protocol']
+        if os.path.exists(fp):
+            for row in CSVManager.read_csv(fp):
+                if str(row.get('Сумма', '')).strip():
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def _stage_config_path(comp_path: str, kata_key: str) -> str:
     return os.path.join(comp_path, kata_key, 'stage.json')
 
@@ -53,6 +186,9 @@ def ensure_stage_config(comp_path: str, kata_key: str) -> dict:
         'current_stage': 'final',
         'status': 'open',
         'final_top_n': 3,
+        'age_category': '',
+        'techniques_count_prelim': None,
+        'techniques_count_final': None,
     }
     if os.path.exists(cfg_path):
         try:
@@ -61,6 +197,11 @@ def ensure_stage_config(comp_path: str, kata_key: str) -> dict:
             cfg.update(loaded or {})
         except Exception:
             pass
+    # Нормализация: пустые/некорректные значения techniques_count -> None (все техники)
+    for tc_key in ('techniques_count_prelim', 'techniques_count_final'):
+        total = len(DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
+        n = clamp_techniques_count(cfg.get(tc_key), total)
+        cfg[tc_key] = n
     # Ensure stage files exist:
     # prelim -> root discipline files; final -> subfolder final/
     CompetitionCSVManager.create_discipline_structure(comp_path, kata_key)
@@ -136,9 +277,10 @@ def _compute_final_from_entry(pair_entry: dict, effective_positions: list) -> fl
 
 
 def _participant_detail_line(pair_row: dict, prefix: str) -> str:
-    """prefix: 'Тори_' или 'Уке_'"""
+    """prefix: 'Тори_' или 'Уке_'. Хранится только год рождения — выводим 4 цифры."""
+    year = extract_birth_year(pair_row.get(f'{prefix}год рождения', ''))
     parts = [
-        pair_row.get(f'{prefix}год рождения', '').strip(),
+        str(year) if year is not None else '',
         pair_row.get(f'{prefix}разряд', '').strip(),
         pair_row.get(f'{prefix}кю', '').strip(),
         pair_row.get(f'{prefix}СШ', '').strip(),
@@ -168,6 +310,7 @@ def decode_participant_cell(cell_value) -> dict:
 
 
 def enrich_result_row_cells(result: dict, pair_row: dict = None) -> None:
+    """Тори/Уке для табло: ФИО и детали (год, разряд, кю, СШ, тренер) отдельными полями."""
     if pair_row:
         result['tori_cell'] = {
             'name': pair_row.get('Тори_ФИО', '').strip(),
@@ -180,6 +323,10 @@ def enrich_result_row_cells(result: dict, pair_row: dict = None) -> None:
     else:
         result['tori_cell'] = decode_participant_cell(result.get('tori', ''))
         result['uke_cell'] = decode_participant_cell(result.get('uke', ''))
+    # Совместимость: единая строка "Имя, детали"
+    for role in ('tori', 'uke'):
+        cell = result[f'{role}_cell']
+        result[role] = f"{cell['name']}, {cell['detail']}".strip(', ') if cell.get('detail') else cell.get('name', '')
 
 
 def judge_score_cell_style(score) -> dict:
@@ -221,10 +368,183 @@ def prepare_tablo_results(results: list, pairs: list) -> list:
     return out
 
 
+# ==================== ТЕМЫ (единый источник для base.html и табло) ====================
+
+THEME_NAMES = [
+    ('default', 'Стандартная'),
+    ('dark', 'Тёмная'),
+    ('light', 'Светлая'),
+    ('pistachio', 'Фисташковая'),
+    ('ocean', 'Океан'),
+    ('sunset', 'Закат'),
+]
+VALID_THEMES = {k for k, _ in THEME_NAMES}
+THEME_STORAGE_KEY = 'kata_judge_theme'
+
+# CSS-переменные тем. Обязательные ключи (все темы): --tablo-head-bg, --tablo-title-color,
+# --tablo-sub-color, --tablo-category-color, --tablo-date-color, --tablo-sep-color,
+# --tablo-part-color, --tablo-th-color, --tablo-name-color, --tablo-extra-color,
+# --tablo-sum-color, --tablo-place-top3-color, --tablo-place-other-color,
+# --tablo-empty-color, --tablo-flat-score-color, --tablo-gradient-text-dark,
+# --tablo-gradient-text-light, --tablo-toggle-border.
+# Опциональные (есть не во всех темах): --surface-1, --surface-2, --hover-accent, --hover-accent-text.
+# Значения подобраны с контрастом к фону не ниже WCAG AA (4.5:1).
+THEME_CSS_VARS = {
+    'default': """
+        html[data-theme="default"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.14);
+            --tablo-title-color: #ffffff;
+            --tablo-sub-color: #ffe9a8;
+            --tablo-category-color: #ffffff;
+            --tablo-date-color: #eaf2fb;
+            --tablo-sep-color: rgba(255, 255, 255, 0.45);
+            --tablo-part-color: #f2f6fc;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #14314b;
+            --tablo-place-top3-color: #a51218;
+            --tablo-place-other-color: #1f2937;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #1d6b45;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: #d7dbe0;
+        }
+""",
+    'dark': """
+        html[data-theme="dark"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.05);
+            --tablo-title-color: #f2f6fc;
+            --tablo-sub-color: #ffd166;
+            --tablo-category-color: #e8eef6;
+            --tablo-date-color: #cfd9e6;
+            --tablo-sep-color: rgba(255, 255, 255, 0.25);
+            --tablo-part-color: #cfd9e6;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #ffd166;
+            --tablo-place-top3-color: #ff8a8a;
+            --tablo-place-other-color: #e5e7eb;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #7ee2b8;
+            --tablo-gradient-text-dark: #0b1320;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(255, 255, 255, 0.18);
+        }
+""",
+    'light': """
+        html[data-theme="light"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.78);
+            --tablo-title-color: #10233c;
+            --tablo-sub-color: #1c3f6e;
+            --tablo-category-color: #22303f;
+            --tablo-date-color: #33465c;
+            --tablo-sep-color: rgba(42, 90, 166, 0.35);
+            --tablo-part-color: #33465c;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #1d4e89;
+            --tablo-place-top3-color: #b3000e;
+            --tablo-place-other-color: #1f2937;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #1d6b45;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(15, 23, 32, 0.18);
+        }
+""",
+    'pistachio': """
+        html[data-theme="pistachio"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.65);
+            --tablo-title-color: #122b1e;
+            --tablo-sub-color: #1f4d3a;
+            --tablo-category-color: #1c3527;
+            --tablo-date-color: #2c4636;
+            --tablo-sep-color: rgba(31, 77, 58, 0.35);
+            --tablo-part-color: #2c4636;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #1e5b40;
+            --tablo-place-top3-color: #a3122a;
+            --tablo-place-other-color: #173022;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #1c5c3f;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(31, 77, 58, 0.25);
+        }
+""",
+    'ocean': """
+        html[data-theme="ocean"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.62);
+            --tablo-title-color: #052733;
+            --tablo-sub-color: #0b4b5e;
+            --tablo-category-color: #0a3040;
+            --tablo-date-color: #14485c;
+            --tablo-sep-color: rgba(11, 114, 133, 0.4);
+            --tablo-part-color: #14485c;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #0a5c70;
+            --tablo-place-top3-color: #a3122a;
+            --tablo-place-other-color: #06212a;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #0c6b53;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(6, 33, 42, 0.2);
+        }
+""",
+    'sunset': """
+        html[data-theme="sunset"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.6);
+            --tablo-title-color: #320f26;
+            --tablo-sub-color: #6e1f45;
+            --tablo-category-color: #45132f;
+            --tablo-date-color: #5a2a44;
+            --tablo-sep-color: rgba(166, 58, 90, 0.4);
+            --tablo-part-color: #5a2a44;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #8a2f52;
+            --tablo-place-top3-color: #b3000e;
+            --tablo-place-other-color: #2a0f21;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #1d6b45;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(74, 31, 59, 0.22);
+        }
+""",
+}
+
+
+def build_themes_css() -> str:
+    parts = []
+    for key, _name in THEME_NAMES:
+        parts.append(THEME_CSS_VARS[key])
+    return '\n'.join(parts)
+
+
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['SECRET_KEY'] = 'your_secret_key_here_change_in_production'
 app.config['SESSION_COOKIE_SECURE'] = False
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+
+
+@app.context_processor
+def inject_theme_globals():
+    return {
+        'THEME_NAMES': THEME_NAMES,
+        'THEME_STORAGE_KEY': THEME_STORAGE_KEY,
+        'themes_css': build_themes_css(),
+    }
 
 # Инициализация SocketIO
 socketio = SocketIO(
@@ -308,7 +628,7 @@ def admin_dashboard():
                 competitions.append(comp_folder)
     
     competitions.sort(reverse=True)
-    return render_template('admin_dashboard.html', competitions=competitions)
+    return render_template('admin_dashboard.html', competitions=competitions, comp_display_names=comp_display_names)
 
 
 @app.route('/data-editor')
