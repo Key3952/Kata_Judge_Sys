@@ -367,21 +367,64 @@ def api_export_pdf() -> Response:
 def on_subscribe(payload: dict) -> None:
     from flask_socketio import join_room
 
-    comp = payload.get("competition", "default")
-    kata = payload.get("kata", "")
+    comp = (payload.get("comp_name") or payload.get("competition")
+            or current_competition())
+    kata = _norm_kata(payload.get("kata") or payload.get("discipline_key") or "")
     stage = payload.get("stage", "qual")
     join_room(f"tablo:{comp}:{kata}:{stage}")
     join_room(f"tablo:{comp}")
-    emit_rows(comp, kata, stage)
+    emit_board(comp, kata, stage)
 
 
-def emit_rows(comp: str, kata: str, stage: str) -> None:
-    from flask_socketio import emit as sio_emit
+@socketio.on("join_tablo")
+def on_join_tablo(payload: dict) -> None:
+    """main_tablo_dynamic.html: подписка на все табло соревнования."""
+    from flask_socketio import join_room
 
-    sio_emit("leaderboard", {
-        "rows": svc.build_leaderboard(comp, kata, stage),
-        "meta": svc.get_competition_meta(comp),
-    })
+    comp = payload.get("comp_name") or current_competition()
+    join_room(f"tablo:{comp}")
+    meta = svc.get_competition_meta(comp)
+    kata = _norm_kata(meta.get("main_tablo_discipline") or "")
+    stage = meta.get("current_stage", "qual")
+    if kata:
+        socketio.emit("tablo_update", {"comp_name": comp,
+                                       "discipline_key": kata},
+                      room=f"tablo:{comp}")
+
+
+@socketio.on("leave_tablo")
+def on_leave_tablo(payload: dict) -> None:
+    from flask_socketio import leave_room
+
+    comp = payload.get("comp_name") or current_competition()
+    leave_room(f"tablo:{comp}")
+
+
+def emit_board(comp: str, kata: str, stage: str) -> None:
+    """Realtime-пуш табло (п.7): обновляет и вкладку табло дисциплины,
+    и главное табло без перезагрузки страницы."""
+    board = svc.build_leaderboard(comp, kata, stage)
+    judges = svc.get_effective_judges(comp, kata, stage)
+    rows = []
+    for r in board:
+        per_judge = svc.list_judge_scores(comp, kata, stage, "",
+                                          r["pair_number"])
+        score_map = {j["name"]: j["total"] for j in per_judge}
+        rows.append({
+            "place": r["place"], "pair_number": r["pair_number"],
+            "tori_cell": {"name": r["tori"].get("name", ""), "detail": None},
+            "uke_cell": {"name": r["uke"].get("name", ""), "detail": None},
+            "judge_scores": [score_map.get(j["name"]) for j in judges],
+            "final_score": r["final_score"],
+        })
+    payload = {"comp_name": comp, "kata": kata, "stage": stage,
+               "rows": rows, "judges": judges,
+               "meta": svc.get_competition_meta(comp)}
+    socketio.emit("leaderboard", payload,
+                  room=f"tablo:{comp}:{kata}:{stage}")
+    socketio.emit("leaderboard", payload, room=f"tablo:{comp}")
+    socketio.emit("tablo_update", {"comp_name": comp, "discipline_key": kata},
+                  room=f"tablo:{comp}")
 
 
 # ---------- HTML-страницы (шаблоны взяты из репозитория) ----------
