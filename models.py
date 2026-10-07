@@ -132,6 +132,10 @@ class CompetitionMeta(db.Model):
     date: str | None = db.Column(db.String(30))       # ISO-строка 'YYYY-MM-DD'
     location: str | None = db.Column(db.String(200))
     subtitle: str | None = db.Column(db.String(300))  # п.3: возрастная категория
+    main_tablo_discipline: str | None = db.Column(db.String(50))  # дисциплина главного табло
+    status: str = db.Column(db.String(20), default="open")        # open/close (UI-переключатель)
+    current_stage: str = db.Column(db.String(10), default="qual")  # qual|final — активный этап
+    final_top_n: int = db.Column(db.Integer, default=3)            # сколько пар переводить в финал
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
 
     competition = db.relationship("Competition", backref="meta")

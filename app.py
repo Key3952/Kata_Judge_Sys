@@ -3,21 +3,27 @@
 
 Realtime (п.7): SocketIO room 'tablo:<comp>:<kata>:<stage>' — табло на любом
 числе компьютеров обновляется при сохранении оценки без F5.
+
+HTML-шаблоны взяты из репозитория; все url_for-эндпоинты, fetch-URL и поля
+шаблонов реализованы здесь поверх БД-сервиса.
 """
 from __future__ import annotations
 
 import csv
 import io
 import logging
+import re
 import sys
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, session
+from flask import (Flask, Response, jsonify, redirect, render_template,
+                   request, session, url_for)
 from flask_socketio import SocketIO
 
 import config
+import technics
 from db_service import DBService, configure_sqlite_pragmas
-from models import db, Participant, Judge
+from models import db, Participant, Judge, DisciplinePair
 from csv_import import import_participants_csv, import_judges_csv
 
 logging.basicConfig(

@@ -120,6 +120,103 @@ class DBService:
             db.session.commit()
         return comp
 
+    def _meta_row(self, folder_name: str) -> CompetitionMeta:
+        """Гарантированная запись meta (создаёт при отсутствии)."""
+        comp = self.get_or_create_competition(folder_name)
+        meta = CompetitionMeta.query.filter_by(competition_id=comp.id).first()
+        if meta is None:
+            meta = CompetitionMeta(competition_id=comp.id)
+            db.session.add(meta)
+            db.session.commit()
+        return meta
+
+    def set_main_tablo(self, folder_name: str, discipline_key: str | None) -> None:
+        self._meta_row(folder_name).main_tablo_discipline = discipline_key or None
+        db.session.commit()
+
+    def set_comp_status(self, folder_name: str, status: str) -> None:
+        self._meta_row(folder_name).status = status
+        db.session.commit()
+
+    def set_current_stage(self, folder_name: str, stage: str,
+                          top_n: int | None = None) -> None:
+        meta = self._meta_row(folder_name)
+        meta.current_stage = stage
+        if top_n is not None:
+            meta.final_top_n = max(1, int(top_n))
+        db.session.commit()
+
+    def promote_top_to_final(self, folder_name: str, kata_key: str,
+                             top_n: int) -> list[int]:
+        """Перевод топ-N пар квалификации в финал (по leaderboard)."""
+        board = self.build_leaderboard(folder_name, kata_key, "qual")[:top_n]
+        disc = self.get_or_create_discipline(folder_name, kata_key)
+        nums = [r["pair_number"] for r in board]
+        items = [{"pair_number": n,
+                  "tori_name": r["tori"].get("name", ""),
+                  "uke_name": r["uke"].get("name", "")}
+                 for n, r in zip(nums, board)]
+        self.save_pairs(disc.id, DisciplinePair.STAGE_FINAL, items)
+        return nums
+
+    def get_all_competitions(self) -> list[dict]:
+        """Список соревнований с живыми названиями (п.2/п.11)."""
+        out = []
+        for comp in Competition.query.order_by(Competition.id).all():
+            m = self.get_competition_meta(comp.folder_name)
+            out.append({"name": comp.folder_name,
+                        "display_name": m.get("title") or comp.folder_name,
+                        "status": m.get("status", "open"),
+                        "finished": comp.status == Competition.STATUS_FINISHED})
+        return out
+
+    def delete_competition(self, folder_name: str) -> bool:
+        comp = Competition.query.filter_by(folder_name=folder_name).first()
+        if comp is None:
+            return False
+        db.session.delete(comp)   # cascade: disciplines/pairs/judges/scores
+        db.session.commit()
+        return True
+
+    def clear_participants(self) -> int:
+        n = Participant.query.count()
+        Participant.query.delete()
+        db.session.commit()
+        return n
+
+    def clear_judges(self) -> int:
+        n = Judge.query.count()
+        Judge.query.delete()
+        db.session.commit()
+        return n
+
+    def column_suggestions(self, field: str, q: str,
+                           limit: int = 20) -> list[str]:
+        """Уникальные значения колонки реестра для автодополнения."""
+        col = {"sports_school": Participant.sports_school,
+               "coach": Participant.coach,
+               "rank": Participant.rank}.get(field)
+        if col is None:
+            return []
+        val = (q or "").strip().lower()
+        seen: list[str] = []
+        for (p,) in Participant.query.with_entities(col).distinct().all():
+            if not p:
+                continue
+            if val and val not in p.lower():
+                continue
+            seen.append(p)
+            if len(seen) >= limit:
+                break
+        return seen
+
+    def participant_info(self, name: str) -> dict | None:
+        """Данные последнего реестра по ФИО (для подтягивания в форму, п.2)."""
+        norm = normalize_name(name)
+        p = (Participant.query.filter_by(name_norm=norm)
+             .order_by(Participant.updated_at.desc()).first())
+        return p.to_dict() if p else None
+
     def set_competition_meta(self, folder_name: str, *, title: str | None = None,
                              date: str | None = None, location: str | None = None,
                              subtitle: str | None = None) -> CompetitionMeta:
@@ -151,6 +248,10 @@ class DBService:
         return {
             "title": meta.title, "date": meta.date,
             "location": meta.location, "subtitle": meta.subtitle,
+            "main_tablo_discipline": meta.main_tablo_discipline,
+            "status": meta.status or "open",
+            "current_stage": meta.current_stage or "qual",
+            "final_top_n": meta.final_top_n or 3,
         }
 
     def finish_competition(self, folder_name: str) -> bool:
@@ -233,6 +334,17 @@ class DBService:
                         pid = new_p.id
                         index[(pname.lower(), year)] = new_p
                 setattr(pair, f"{role}_id", pid)
+                # снимок + доп. поля (разряд/кю/СШ/тренер) — используются
+                # табло как detail-строка; обновляются при каждой регистрации
+                snap = getattr(pair, f"{role}_snapshot") or {}
+                snap.update({
+                    "name": pname, "birth_year": year,
+                    "rank": item.get(f"{role}_rank") or "",
+                    "kyu": item.get(f"{role}_kyu") or "",
+                    "sports_school": item.get(f"{role}_school") or "",
+                    "coach": item.get(f"{role}_coach") or "",
+                })
+                setattr(pair, f"{role}_snapshot", snap)
         # удалить пары, которых нет в новом списке
         for num, pair in existing.items():
             if num not in seen:
@@ -383,6 +495,26 @@ class DBService:
         rows = [{**p, "final_score": totals.get(p["pair_number"], 0.0)}
                 for p in pairs]
         return rank_pairs(rows)
+
+    def list_judge_scores(self, folder_name: str, kata_key: str, stage: str,
+                          judge_name: str, pair_number: int) -> list[dict]:
+        """Судейские оценки по паре (для табло): [{name, position, total}]."""
+        comp = Competition.query.filter_by(folder_name=folder_name).first()
+        if comp is None:
+            return []
+        disc = Discipline.query.filter_by(competition_id=comp.id,
+                                          kata_key=kata_key).first()
+        if disc is None:
+            return []
+        scores = (JudgeScore.query
+                  .filter_by(discipline_id=disc.id, stage=stage,
+                             pair_number=pair_number).all())
+        pos_map = {e.judge_id: e.position for e in JudgeListEntry.query.filter_by(
+            discipline_id=disc.id, stage=stage).all()}
+        out = [{"name": s.judge.name, "position": pos_map.get(s.judge_id, 0),
+                "total": float(s.total or 0.0)} for s in scores]
+        out.sort(key=lambda x: x["position"])
+        return out
 
     # ---------- Экспорт протоколов (для скачивания из браузера) ----------
 
