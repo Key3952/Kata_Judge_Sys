@@ -6,7 +6,10 @@ import csv
 import io
 from typing import Dict
 from datetime import datetime
-from csv_manager import CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer, _csv_lock
+from csv_manager import (
+    CSVManager, CompetitionCSVManager, sort_prelim_results_for_final_transfer, _csv_lock,
+    extract_birth_year, format_birth_year, birth_year_upper_limit, BIRTH_YEAR_MIN,
+)
 from scoring import calculate_pair_final_score
 import json
 
@@ -40,6 +43,215 @@ def format_date_ru(dt: datetime) -> str:
     return f"{dt.day} {MONTHS_RU.get(dt.month, '')} {dt.year} г."
 
 
+def parse_iso_date(s):
+    """Безопасно разбирает 'ГГГГ-ММ-ДД' в date; None при ошибке."""
+    from datetime import date as _date
+    try:
+        y, m, d = str(s).strip().split('-')
+        return _date(int(y), int(m), int(d))
+    except Exception:
+        return None
+
+
+def format_date_range_ru(start_s, end_s) -> str:
+    """Одна дата или период ('15 марта 2026 г.', '3 – 5 апреля 2026 г.'). '' если пусто."""
+    d1 = parse_iso_date(start_s) if start_s else None
+    d2 = parse_iso_date(end_s) if end_s else None
+    if d1 and d2 and d2 > d1:
+        if d1.month == d2.month and d1.year == d2.year:
+            return f"{d1.day}–{d2.day} {MONTHS_RU.get(d2.month, '')} {d2.year} г."
+        return f"{format_date_ru(d1)} — {format_date_ru(d2)}"
+    if d1:
+        return format_date_ru(d1)
+    if d2:
+        return format_date_ru(d2)
+    return ''
+
+
+def get_competition_dates_label(config: dict) -> str:
+    """Подпись даты соревнования из config.json (event_start / event_end)."""
+    return format_date_range_ru(config.get('event_start', ''), config.get('event_end', ''))
+
+
+# ============ Возрастная категория (субтайтл табло) ============
+
+SUBTITLE_MAX_LEN = 120
+
+
+def get_effective_subtitle(comp_path: str, kata_key: str, config: dict = None) -> str:
+    """Возрастная категория для табло: уровень дисциплины/этапа важнее уровня соревнования."""
+    text = ''
+    if config is None:
+        config_file = os.path.join(comp_path, 'config.json')
+        config = {}
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f) or {}
+            except Exception:
+                config = {}
+    comp_sub = str(config.get('age_category', '') or '').strip()
+    if comp_sub:
+        text = comp_sub
+    try:
+        stage_cfg = ensure_stage_config(comp_path, kata_key)
+        disc_sub = str(stage_cfg.get('age_category', '') or '').strip()
+        if disc_sub:
+            text = disc_sub
+    except Exception:
+        pass
+    return text[:SUBTITLE_MAX_LEN]
+
+
+# ============ Число оцениваемых техник (techniques_count) ============
+
+TECHNIQUES_COUNT_MIN = 5
+TECHNIQUES_COUNT_MAX = 10
+
+
+def clamp_techniques_count(value, total: int):
+    """Возвращает n в допустом интерфейсом диапазоне [max(5,min(10,total)) .. min(10,total)]
+    либо None, если значение не задано (используется полное число техник ката)."""
+    if value is None or value == '':
+        return None
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    upper = min(TECHNIQUES_COUNT_MAX, max(total, 1))
+    lower = min(TECHNIQUES_COUNT_MIN, upper)
+    return max(lower, min(upper, n))
+
+
+def validate_techniques_count_input(value, total: int):
+    """Проверка пользовательского ввода числа техник.
+
+    Возвращает (n, error): n — принятое значение или None; error — текст причины отказа.
+    Диапазон: от TECHNIQUES_COUNT_MIN до фактического числа техник ката (по ТЗ — «не больше 15»).
+    """
+    if value is None or str(value).strip() == '':
+        return None, 'Укажите количество техник'
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None, 'Количество техник должно быть целым числом'
+    if n < TECHNIQUES_COUNT_MIN:
+        return None, f'Нельзя указать меньше {TECHNIQUES_COUNT_MIN} техник'
+    if n > total:
+        return None, f'В этом ката всего {total} техник — значение не может быть больше'
+    return n, ''
+
+
+def get_stage_techniques_count(comp_path: str, kata_key: str, stage: str) -> int:
+    """Число оцениваемых техник для этапа (квалификация/финал отдельно).
+    Ограничение включается флагом techniques_limit_enabled; если флаг выключен
+    или значение не задано — полное число техник ката."""
+    cfg = ensure_stage_config(comp_path, kata_key)
+    total = len(DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
+    if not cfg.get('techniques_limit_enabled'):
+        return total
+    raw = cfg.get('techniques_count_final') if stage == 'final' else cfg.get('techniques_count_prelim')
+    n = clamp_techniques_count(raw, total)
+    if n is None:
+        return total
+    return n
+
+
+def effective_techniques(comp_path: str, kata_key: str, stage: str) -> list:
+    """Первые n оцениваемых техник ката для текущего этапа (n = techniques_count)."""
+    all_tech = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
+    n = get_stage_techniques_count(comp_path, kata_key, stage)
+    return all_tech[:n] if n else all_tech
+
+
+def limit_technique_rows(comp_path: str, kata_key: str, stage: str, rows: list) -> list:
+    """Единственная общая точка отсечения: оставляет только первые n записей техник
+    (техника_№ <= n). При выключенном переключателе возвращает все строки как есть."""
+    total = len(DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
+    n = get_stage_techniques_count(comp_path, kata_key, stage)
+    if not n or n >= total or not isinstance(rows, list):
+        return rows
+    kept = []
+    for idx, row in enumerate(rows):
+        num = None
+        try:
+            num = int(str(row.get('техника_№', '')).strip() or 0) or None
+        except (TypeError, ValueError, AttributeError):
+            num = None
+        if num is None:
+            num = idx + 1
+        if num <= n:
+            kept.append(row)
+    return kept
+
+
+def read_stage_techniques_count_raw(comp_path: str, kata_key: str) -> dict:
+    cfg = ensure_stage_config(comp_path, kata_key)
+    return {
+        'prelim': cfg.get('techniques_count_prelim'),
+        'final': cfg.get('techniques_count_final'),
+        'enabled': bool(cfg.get('techniques_limit_enabled')),
+    }
+
+
+def stage_data_fingerprint(comp_path: str, kata_key: str) -> float:
+    """Модификации ключевых файлов этапа (для кеша и дешёвой проверки изменений табло)."""
+    latest = 0.0
+    try:
+        files = get_stage_files(comp_path, kata_key, stage_for_ops(comp_path, kata_key))
+        for key in ('participants', 'final_protocol'):
+            p = files.get(key)
+            if p and os.path.exists(p):
+                latest = max(latest, os.path.getmtime(p))
+        disc_cfg = _stage_config_path(comp_path, kata_key)
+        if os.path.exists(disc_cfg):
+            latest = max(latest, os.path.getmtime(disc_cfg))
+        comp_cfg = os.path.join(comp_path, 'config.json')
+        if os.path.exists(comp_cfg):
+            latest = max(latest, os.path.getmtime(comp_cfg))
+        protocols_dir = os.path.join(os.path.dirname(files['participants']), 'protocols')
+        if os.path.isdir(protocols_dir):
+            for fn in os.listdir(protocols_dir):
+                if fn.endswith('.csv'):
+                    try:
+                        latest = max(latest, os.path.getmtime(os.path.join(protocols_dir, fn)))
+                    except OSError:
+                        pass
+    except Exception:
+        pass
+    return latest
+
+
+def has_submitted_scores(comp_path: str, kata_key: str, stage: str) -> bool:
+    """Есть ли сданные оценки судей на этапе (файлы протоколов или заполненный итог)."""
+    stage_files = get_stage_files(comp_path, kata_key, stage)
+    protocols_dir = os.path.join(os.path.dirname(stage_files['participants']), 'protocols')
+    if os.path.isdir(protocols_dir):
+        for fn in os.listdir(protocols_dir):
+            if not fn.endswith('.csv'):
+                continue
+            rows = CSVManager.read_csv(os.path.join(protocols_dir, fn))
+            for r in rows:
+                dj = str(r.get('details_json', '') or '').strip()
+                if dj and dj not in ('{}', 'null'):
+                    try:
+                        d = json.loads(dj)
+                    except json.JSONDecodeError:
+                        continue
+                    if any(float(d.get(k, 0) or 0) for k in ('m1', 'm2', 'med', 'big', 'c_minus', 'c_plus')) \
+                            or bool(d.get('forgotten', False)):
+                        return True
+    try:
+        fp = stage_files['final_protocol']
+        if os.path.exists(fp):
+            for row in CSVManager.read_csv(fp):
+                if str(row.get('Сумма', '')).strip():
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def _stage_config_path(comp_path: str, kata_key: str) -> str:
     return os.path.join(comp_path, kata_key, 'stage.json')
 
@@ -53,14 +265,42 @@ def ensure_stage_config(comp_path: str, kata_key: str) -> dict:
         'current_stage': 'final',
         'status': 'open',
         'final_top_n': 3,
+        'age_category': '',
+        'techniques_limit_enabled': False,
+        'techniques_count_prelim': None,
+        'techniques_count_final': None,
     }
     if os.path.exists(cfg_path):
         try:
             with open(cfg_path, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-            cfg.update(loaded or {})
+                loaded = json.load(f) or {}
+            cfg.update(loaded)
         except Exception:
-            pass
+            loaded = {}
+    # Обратная совместимость: раньше ограничение считалось включённым,
+    # если значение techniques_count было задано явно.
+    if isinstance(loaded, dict) and 'techniques_limit_enabled' not in loaded:
+        if cfg.get('techniques_count_prelim') is not None or cfg.get('techniques_count_final') is not None:
+            cfg['techniques_limit_enabled'] = True
+    cfg['techniques_limit_enabled'] = bool(cfg.get('techniques_limit_enabled'))
+    # Нормализация: пустые/некорректные значения techniques_count -> None (все техники).
+    # Сохраняем сырое значение, если оно вне диапазона, — интерфейс подсветит причину,
+    # но в расчётах такой этап использует полное число техник.
+    for tc_key in ('techniques_count_prelim', 'techniques_count_final'):
+        total = len(DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
+        raw = cfg.get(tc_key)
+        if raw is None or raw == '':
+            cfg[tc_key] = None
+            continue
+        try:
+            n_raw = int(str(raw).strip())
+        except (TypeError, ValueError):
+            cfg[tc_key] = None
+            continue
+        if 1 <= n_raw <= total:
+            cfg[tc_key] = n_raw
+        else:
+            cfg[tc_key] = None
     # Ensure stage files exist:
     # prelim -> root discipline files; final -> subfolder final/
     CompetitionCSVManager.create_discipline_structure(comp_path, kata_key)
@@ -136,9 +376,10 @@ def _compute_final_from_entry(pair_entry: dict, effective_positions: list) -> fl
 
 
 def _participant_detail_line(pair_row: dict, prefix: str) -> str:
-    """prefix: 'Тори_' или 'Уке_'"""
+    """prefix: 'Тори_' или 'Уке_'. Хранится только год рождения — выводим 4 цифры."""
+    year = extract_birth_year(pair_row.get(f'{prefix}год рождения', ''))
     parts = [
-        pair_row.get(f'{prefix}год рождения', '').strip(),
+        str(year) if year is not None else '',
         pair_row.get(f'{prefix}разряд', '').strip(),
         pair_row.get(f'{prefix}кю', '').strip(),
         pair_row.get(f'{prefix}СШ', '').strip(),
@@ -168,6 +409,7 @@ def decode_participant_cell(cell_value) -> dict:
 
 
 def enrich_result_row_cells(result: dict, pair_row: dict = None) -> None:
+    """Тори/Уке для табло: ФИО и детали (год, разряд, кю, СШ, тренер) отдельными полями."""
     if pair_row:
         result['tori_cell'] = {
             'name': pair_row.get('Тори_ФИО', '').strip(),
@@ -180,6 +422,10 @@ def enrich_result_row_cells(result: dict, pair_row: dict = None) -> None:
     else:
         result['tori_cell'] = decode_participant_cell(result.get('tori', ''))
         result['uke_cell'] = decode_participant_cell(result.get('uke', ''))
+    # Совместимость: единая строка "Имя, детали"
+    for role in ('tori', 'uke'):
+        cell = result[f'{role}_cell']
+        result[role] = f"{cell['name']}, {cell['detail']}".strip(', ') if cell.get('detail') else cell.get('name', '')
 
 
 def judge_score_cell_style(score) -> dict:
@@ -221,10 +467,204 @@ def prepare_tablo_results(results: list, pairs: list) -> list:
     return out
 
 
+# ==================== ТЕМЫ (единый источник для base.html и табло) ====================
+
+THEME_NAMES = [
+    ('default', 'Стандартная'),
+    ('dark', 'Тёмная'),
+    ('light', 'Светлая'),
+    ('pistachio', 'Фисташковая'),
+    ('ocean', 'Океан'),
+    ('sunset', 'Закат'),
+]
+VALID_THEMES = {k for k, _ in THEME_NAMES}
+THEME_STORAGE_KEY = 'kata_judge_theme'
+
+# CSS-переменные тем. Обязательные ключи (все темы): --tablo-head-bg, --tablo-title-color,
+# --tablo-sub-color, --tablo-category-color, --tablo-date-color, --tablo-sep-color,
+# --tablo-part-color, --tablo-th-color, --tablo-name-color, --tablo-extra-color,
+# --tablo-sum-color, --tablo-place-top3-color, --tablo-place-other-color,
+# --tablo-empty-color, --tablo-flat-score-color, --tablo-gradient-text-dark,
+# --tablo-gradient-text-light, --tablo-toggle-border.
+# Опциональные (есть не во всех темах): --surface-1, --surface-2, --hover-accent, --hover-accent-text.
+# Значения подобраны с контрастом к фону не ниже WCAG AA (4.5:1).
+THEME_CSS_VARS = {
+    'default': """
+        html[data-theme="default"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.14);
+            --tablo-title-color: #ffffff;
+            --tablo-sub-color: #ffe9a8;
+            --tablo-category-color: #ffffff;
+            --tablo-date-color: #eaf2fb;
+            --tablo-sep-color: rgba(255, 255, 255, 0.45);
+            --tablo-part-color: #f2f6fc;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #14314b;
+            --tablo-place-top3-color: #a51218;
+            --tablo-place-other-color: #1f2937;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #1d6b45;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: #d7dbe0;
+        }
+""",
+    'dark': """
+        html[data-theme="dark"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.05);
+            --tablo-title-color: #f2f6fc;
+            --tablo-sub-color: #ffd166;
+            --tablo-category-color: #e8eef6;
+            --tablo-date-color: #cfd9e6;
+            --tablo-sep-color: rgba(255, 255, 255, 0.25);
+            --tablo-part-color: #cfd9e6;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #ffd166;
+            --tablo-place-top3-color: #ff8a8a;
+            --tablo-place-other-color: #e5e7eb;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #7ee2b8;
+            --tablo-gradient-text-dark: #0b1320;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(255, 255, 255, 0.18);
+        }
+""",
+    'light': """
+        html[data-theme="light"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.78);
+            --tablo-title-color: #10233c;
+            --tablo-sub-color: #1c3f6e;
+            --tablo-category-color: #22303f;
+            --tablo-date-color: #33465c;
+            --tablo-sep-color: rgba(42, 90, 166, 0.35);
+            --tablo-part-color: #33465c;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #1d4e89;
+            --tablo-place-top3-color: #b3000e;
+            --tablo-place-other-color: #1f2937;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #1d6b45;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(15, 23, 32, 0.18);
+        }
+""",
+    'pistachio': """
+        html[data-theme="pistachio"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.65);
+            --tablo-title-color: #122b1e;
+            --tablo-sub-color: #1f4d3a;
+            --tablo-category-color: #1c3527;
+            --tablo-date-color: #2c4636;
+            --tablo-sep-color: rgba(31, 77, 58, 0.35);
+            --tablo-part-color: #2c4636;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #1e5b40;
+            --tablo-place-top3-color: #a3122a;
+            --tablo-place-other-color: #173022;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #1c5c3f;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(31, 77, 58, 0.25);
+        }
+""",
+    'ocean': """
+        html[data-theme="ocean"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.62);
+            --tablo-title-color: #052733;
+            --tablo-sub-color: #0b4b5e;
+            --tablo-category-color: #0a3040;
+            --tablo-date-color: #14485c;
+            --tablo-sep-color: rgba(11, 114, 133, 0.4);
+            --tablo-part-color: #14485c;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #0a5c70;
+            --tablo-place-top3-color: #a3122a;
+            --tablo-place-other-color: #06212a;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #0c6b53;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(6, 33, 42, 0.2);
+        }
+""",
+    'sunset': """
+        html[data-theme="sunset"] {
+            --tablo-head-bg: rgba(255, 255, 255, 0.6);
+            --tablo-title-color: #320f26;
+            --tablo-sub-color: #6e1f45;
+            --tablo-category-color: #45132f;
+            --tablo-date-color: #5a2a44;
+            --tablo-sep-color: rgba(166, 58, 90, 0.4);
+            --tablo-part-color: #5a2a44;
+            --tablo-th-color: #ffffff;
+            --tablo-name-color: var(--page-text);
+            --tablo-extra-color: var(--muted-text);
+            --tablo-sum-color: #8a2f52;
+            --tablo-place-top3-color: #b3000e;
+            --tablo-place-other-color: #2a0f21;
+            --tablo-empty-color: var(--muted-text);
+            --tablo-flat-score-color: #1d6b45;
+            --tablo-gradient-text-dark: #1b2a1f;
+            --tablo-gradient-text-light: #f8fafc;
+            --tablo-toggle-border: rgba(74, 31, 59, 0.22);
+        }
+""",
+}
+
+
+def build_themes_css() -> str:
+    parts = []
+    for key, _name in THEME_NAMES:
+        parts.append(THEME_CSS_VARS[key])
+    return '\n'.join(parts)
+
+
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['SECRET_KEY'] = 'your_secret_key_here_change_in_production'
 app.config['SESSION_COOKIE_SECURE'] = False
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+
+
+@app.context_processor
+def inject_theme_globals():
+    return {
+        'THEME_NAMES': THEME_NAMES,
+        'THEME_STORAGE_KEY': THEME_STORAGE_KEY,
+        'themes_css': build_themes_css(),
+    }
+
+
+def _load_comp_config(comp_path: str) -> dict:
+    config_file = os.path.join(comp_path, 'config.json')
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f) or {}
+        except Exception:
+            return {}
+    return {}
+
+
+def save_competition_config(comp_path: str, config: dict) -> bool:
+    try:
+        with open(os.path.join(comp_path, 'config.json'), 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
 
 # Инициализация SocketIO
 socketio = SocketIO(
@@ -235,6 +675,58 @@ socketio = SocketIO(
     logger=True,
     engineio_logger=True
 )
+
+
+def broadcast_tablo_update(comp_name: str, discipline_key: str = '') -> None:
+    """Уведомляет открытые табло об изменении настроек (название/дата/категория)."""
+    try:
+        socketio.emit('tablo_update', {
+            'comp_name': comp_name,
+            'discipline_key': discipline_key,
+            'changed': True,
+        })
+    except Exception:
+        pass
+
+
+# ==================== КЕШ ТАБЛО И ОПТИМИЗАЦИЯ РАБОТЫ ====================
+
+TABLO_CACHE_TTL = 20.0            # секунд — кеш собранного HTML табло (инвалидируется по mtime и событиями)
+TABLO_POLL_INTERVAL_MS = 15000    # интервал опроса изменений табло клиентом (10–30 с)
+_tablo_cache = {}                 # key -> {'fp': fingerprint, 'html': str, 'ts': float}
+_tablo_mutex = threading.Lock()
+
+
+def tablo_cached_html(comp_path: str, kata_key: str, builder) -> str:
+    """Возвращает HTML табло из кеша, если файлы этапа не менялись (дешёвая проверка mtime).
+
+    builder — callable без аргументов, собирающий HTML при промахе кеша.
+    """
+    key = f"{comp_path}|{kata_key}"
+    fp = stage_data_fingerprint(comp_path, kata_key)
+    now = time.time()
+    with _tablo_mutex:
+        entry = _tablo_cache.get(key)
+        if entry and entry['fp'] == fp and (now - entry['ts']) < TABLO_CACHE_TTL:
+            return entry['html']
+    html = builder()
+    with _tablo_mutex:
+        _tablo_cache[key] = {
+            'fp': stage_data_fingerprint(comp_path, kata_key),
+            'html': html,
+            'ts': time.time(),
+        }
+    return html
+
+
+def invalidate_tablo_cache(comp_name: str, kata_key: str = '') -> None:
+    """Сбрасывает кеш табло и рассылает всем открытым табло событие обновиться."""
+    prefix = f"{os.path.join(COMPETITIONS_BASE_DIR, comp_name)}|"
+    with _tablo_mutex:
+        for k in [k for k in _tablo_cache
+                  if k.startswith(prefix) and (not kata_key or k.endswith('|' + kata_key))]:
+            _tablo_cache.pop(k, None)
+    broadcast_tablo_update(comp_name, kata_key)
 
 # Глобальные пути
 GLOBAL_DATA_DIR = os.path.dirname(__file__)
@@ -301,14 +793,24 @@ def admin_dashboard():
     
     # Получаем список соревнований
     competitions = []
+    comp_display_names = {}
     if os.path.exists(COMPETITIONS_BASE_DIR):
         for comp_folder in os.listdir(COMPETITIONS_BASE_DIR):
             comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_folder)
             if os.path.isdir(comp_path):
                 competitions.append(comp_folder)
-    
+                # Красивое название из config.json (если есть)
+                config_file = os.path.join(comp_path, 'config.json')
+                try:
+                    if os.path.exists(config_file):
+                        with open(config_file, 'r', encoding='utf-8') as f:
+                            cfg = json.load(f)
+                        comp_display_names[comp_folder] = cfg.get('name', comp_folder)
+                except (json.JSONDecodeError, OSError):
+                    comp_display_names[comp_folder] = comp_folder
+
     competitions.sort(reverse=True)
-    return render_template('admin_dashboard.html', competitions=competitions)
+    return render_template('admin_dashboard.html', competitions=competitions, comp_display_names=comp_display_names)
 
 
 @app.route('/data-editor')
@@ -925,6 +1427,95 @@ def discipline_stage_action(comp_name, kata_key):
     return jsonify({'success': True, 'stage': cfg})
 
 
+@app.route('/admin/<comp_name>/<kata_key>/techniques-limit', methods=['POST'])
+def discipline_techniques_limit(comp_name, kata_key):
+    """Настройка «Ограничить число техник» для дисциплины (переключатель + n).
+
+    Сохраняется в stage.json дисциплины: techniques_limit_enabled (bool),
+    techniques_count_prelim / techniques_count_final (int|None).
+    Оценки судей при изменении n не удаляются — в подсчёт идут только первые n техник.
+    """
+    if not session.get('admin'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    disc_path = os.path.join(comp_path, kata_key)
+    if not os.path.isdir(disc_path):
+        return jsonify({'error': 'Discipline not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    cfg = ensure_stage_config(comp_path, kata_key)
+    total = len(DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
+    enabled = bool(data.get('enabled'))
+
+    errors = {}
+    parsed = {}
+    if enabled:
+        for stage_key, field in (('prelim', 'techniques_count_prelim'), ('final', 'techniques_count_final')):
+            raw = data.get(field)
+            if raw is None and field in ('techniques_count_prelim',):
+                raw = data.get('techniques_count')  # единое поле для обоих этапов
+            if raw is None or str(raw).strip() == '':
+                raw = cfg.get(field)
+            n, err = validate_techniques_count_input(raw, total)
+            if err:
+                errors[stage_key] = err
+            parsed[field] = n
+
+    if errors:
+        return jsonify({'error': 'invalid', 'errors': errors}), 400
+
+    had_scores = has_submitted_scores(comp_path, kata_key, 'prelim') or \
+        has_submitted_scores(comp_path, kata_key, 'final')
+    old_n_prelim = get_stage_techniques_count(comp_path, kata_key, 'prelim')
+    old_n_final = get_stage_techniques_count(comp_path, kata_key, 'final')
+
+    cfg['techniques_limit_enabled'] = enabled
+    if enabled:
+        cfg['techniques_count_prelim'] = parsed['techniques_count_prelim']
+        cfg['techniques_count_final'] = parsed['techniques_count_final']
+    # при выключенном переключателе значения сохраняются, но игнорируются
+
+    with open(_stage_config_path(comp_path, kata_key), 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+    new_n_prelim = get_stage_techniques_count(comp_path, kata_key, 'prelim')
+    new_n_final = get_stage_techniques_count(comp_path, kata_key, 'final')
+    warning = ''
+    if had_scores and (new_n_prelim != old_n_prelim or new_n_final != old_n_final):
+        warning = ('Внимание: на этапе уже есть сданные оценки. Они сохранены, '
+                   'но в подсчёт теперь попадают только первые N техник.')
+
+    invalidate_tablo_cache(comp_name, kata_key)
+    return jsonify({
+        'success': True,
+        'enabled': enabled,
+        'total': total,
+        'prelim': new_n_prelim,
+        'final': new_n_final,
+        'warning': warning,
+        'had_scores': had_scores,
+    })
+
+
+@app.route('/api/<comp_name>/<kata_key>/techniques-limit')
+def discipline_techniques_limit_get(comp_name, kata_key):
+    """Текущая настройка ограничения числа техник для интерфейса."""
+    comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
+    if not os.path.isdir(os.path.join(comp_path, kata_key)):
+        return jsonify({'error': 'Discipline not found'}), 404
+    cfg = ensure_stage_config(comp_path, kata_key)
+    total = len(DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
+    return jsonify({
+        'enabled': bool(cfg.get('techniques_limit_enabled')),
+        'total': total,
+        'min': TECHNIQUES_COUNT_MIN,
+        'prelim': cfg.get('techniques_count_prelim'),
+        'final': cfg.get('techniques_count_final'),
+        'effective_prelim': get_stage_techniques_count(comp_path, kata_key, 'prelim'),
+        'effective_final': get_stage_techniques_count(comp_path, kata_key, 'final'),
+    })
+
+
 @app.route('/admin/<comp_name>/set-main-tablo', methods=['POST'])
 def set_main_tablo_discipline(comp_name):
     """Установить дисциплину для главного табло и уведомить всех зрителей через WebSocket"""
@@ -1342,11 +1933,6 @@ def save_judge_scores(comp_name, kata_key):
     pair_number = request.json.get('pair_number')
     scores = request.json.get('scores', [])
 
-    techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
-
-    if len(scores) != len(techniques):
-        return jsonify({'error': 'Invalid scores length'}), 400
-
     comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_name)
     stage = stage_for_ops(comp_path, kata_key)
     files = get_stage_files(comp_path, kata_key, stage)
@@ -1355,6 +1941,11 @@ def save_judge_scores(comp_name, kata_key):
     pairs_file = files['participants']
     pairs = CSVManager.read_csv(pairs_file)
     pair_obj = next((p for p in pairs if int(p.get('номер пары', 0)) == int(pair_number)), None)
+    techniques = effective_techniques(comp_path, kata_key, stage)
+
+    if len(scores) != len(techniques):
+        return jsonify({'error': 'Invalid scores length'}), 400
+
     if pair_obj:
         tori_fio = pair_obj.get('Тори_ФИО', '')
         uke_fio = pair_obj.get('Уке_ФИО', '')
@@ -1405,6 +1996,10 @@ def save_judge_action(comp_name, kata_key):
     tori_fio = pair_obj.get('Тори_ФИО', '')
     uke_fio = pair_obj.get('Уке_ФИО', '')
 
+    # Оцениваются только первые n техник (настройка дисциплины); лишние отбрасываются.
+    techniques = effective_techniques(comp_path, kata_key, stage)
+    details = list(details or [])[:len(techniques)]
+
     # Рассчитываем scores из details
     scores = []
     for d in details:
@@ -1425,10 +2020,10 @@ def save_judge_action(comp_name, kata_key):
 
     os.makedirs(os.path.dirname(protocol_path), exist_ok=True)
 
-    techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
-    technique_data = [{'техника': tech, 'details_json': json.dumps(d)} for tech, d in zip(techniques, details)]
+    technique_data = [{'техника': tech, 'техника_№': i + 1, 'details_json': json.dumps(d)}
+                      for i, (tech, d) in enumerate(zip(techniques, details))]
 
-    headers = ['техника', 'details_json']
+    headers = ['техника', 'техника_№', 'details_json']
     CSVManager.write_csv(protocol_path, technique_data, headers)
 
     if isFinal:
@@ -1556,7 +2151,8 @@ def judge_page(comp_name, kata_key):
     stage = stage_for_ops(comp_path, kata_key)
     if stage_cfg.get('status') == 'closed':
         flash('Этап дисциплины закрыт', 'warning')
-    techniques = DISCIPLINE_ROWS_BY_KEY.get(kata_key, [])
+    techniques = effective_techniques(comp_path, kata_key, stage)
+    total_techniques = len(DISCIPLINE_ROWS_BY_KEY.get(kata_key, []))
 
     stage_files = get_stage_files(comp_path, kata_key, stage)
     pairs = CSVManager.read_csv(stage_files['participants'])
@@ -1571,6 +2167,7 @@ def judge_page(comp_name, kata_key):
                          kata_key=kata_key,
                          kata_name=get_discipline_display_name(kata_key),
                          techniques=techniques,
+                         total_techniques=total_techniques,
                          pairs=pairs,
                          judges=judges,
                          judge_positions=judge_positions,

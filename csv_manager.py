@@ -229,6 +229,42 @@ def safe_int(value: str, default: int = 0) -> int:
         return default
 
 
+BIRTH_YEAR_MIN = 1900
+
+
+def birth_year_upper_limit() -> int:
+    """Разумный верхний предел года рождения (текущий год + 1)."""
+    from datetime import date
+    return date.today().year + 1
+
+
+def extract_birth_year(value) -> Optional[int]:
+    """Извлекает 4-значный год из строки.
+
+    Принимает '2008', '15.03.2008', '2008-03-15', '2008 г.р.' и т.п.
+    Возвращает int или None, если год не найден / вне разумного диапазона.
+    Старые базы с полными датами импортируются без ошибок: берётся только год.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    m = re.search(r'(?<!\d)((?:19|20)\d{2})(?!\d)', s)
+    if not m:
+        return None
+    year = int(m.group(1))
+    if BIRTH_YEAR_MIN <= year <= birth_year_upper_limit():
+        return year
+    return None
+
+
+def format_birth_year(value) -> str:
+    """Каноничное текстовое представление года ('2008'); '' если значения нет."""
+    y = extract_birth_year(value)
+    return str(y) if y is not None else ''
+
+
 def normalize_protocol_token(s: str) -> str:
     """Единая нормализация ФИО/фрагментов для имён файлов протоколов (пробелы → _)."""
     if s is None:
