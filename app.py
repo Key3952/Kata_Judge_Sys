@@ -621,12 +621,22 @@ def admin_dashboard():
     
     # Получаем список соревнований
     competitions = []
+    comp_display_names = {}
     if os.path.exists(COMPETITIONS_BASE_DIR):
         for comp_folder in os.listdir(COMPETITIONS_BASE_DIR):
             comp_path = os.path.join(COMPETITIONS_BASE_DIR, comp_folder)
             if os.path.isdir(comp_path):
                 competitions.append(comp_folder)
-    
+                # Красивое название из config.json (если есть)
+                config_file = os.path.join(comp_path, 'config.json')
+                try:
+                    if os.path.exists(config_file):
+                        with open(config_file, 'r', encoding='utf-8') as f:
+                            cfg = json.load(f)
+                        comp_display_names[comp_folder] = cfg.get('name', comp_folder)
+                except (json.JSONDecodeError, OSError):
+                    comp_display_names[comp_folder] = comp_folder
+
     competitions.sort(reverse=True)
     return render_template('admin_dashboard.html', competitions=competitions, comp_display_names=comp_display_names)
 
