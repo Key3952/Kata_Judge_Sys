@@ -4,6 +4,9 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
 import csv
 import io
+import json
+import time
+import threading
 from typing import Dict
 from datetime import datetime
 from csv_manager import (
@@ -11,7 +14,6 @@ from csv_manager import (
     extract_birth_year, format_birth_year, birth_year_upper_limit, BIRTH_YEAR_MIN,
 )
 from scoring import calculate_pair_final_score
-import json
 
 # Импортируем DISCIPLINE_ROWS_BY_KEY из technics.py
 from technics import DISCIPLINE_ROWS_BY_KEY
