@@ -2,5 +2,8 @@
   "mode": "final_only",
   "current_stage": "final",
   "status": "open",
-  "final_top_n": 3
+  "final_top_n": 3,
+  "age_category": "",
+  "techniques_count_prelim": null,
+  "techniques_count_final": null
 }

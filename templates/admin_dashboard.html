@@ -59,7 +59,7 @@
                         <tbody>
                             {% for comp in competitions %}
                             <tr>
-                                <td><a href="{{ url_for('edit_competition', comp_name=comp) }}" class="link-body-emphasis"><strong>{{ comp }}</strong></a></td>
+                                <td><a href="{{ url_for('edit_competition', comp_name=comp) }}" class="link-body-emphasis"><strong>{{ comp_display_names.get(comp, comp) if comp_display_names else comp }}</strong></a>{% if comp_display_names and comp_display_names.get(comp, comp) != comp %} <span class="text-muted small">({{ comp }})</span>{% endif %}</td>
                                 <td>
                                     <a href="{{ url_for('edit_competition', comp_name=comp) }}" class="btn btn-sm btn-primary">
                                         ✏️
