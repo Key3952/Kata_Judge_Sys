@@ -19,6 +19,7 @@ import config
 from db_service import DBService, configure_sqlite_pragmas
 from models import db, Participant, Judge
 from csv_import import import_participants_csv, import_judges_csv
+import ui_pages
 
 logging.basicConfig(
     level=logging.INFO,
@@ -389,6 +390,7 @@ def init_db(with_import: bool = True) -> None:
 
 socketio.init_app(app)
 init_db()
+ui_pages.register(app, svc, socketio)
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5000

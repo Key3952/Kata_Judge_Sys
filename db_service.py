@@ -186,6 +186,127 @@ class DBService:
             db.session.commit()
         return disc
 
+    def get_discipline(self, folder_name: str, kata_key: str) -> Discipline | None:
+        comp = Competition.query.filter_by(folder_name=folder_name).first()
+        if comp is None:
+            return None
+        return Discipline.query.filter_by(competition_id=comp.id,
+                                          kata_key=kata_key).first()
+
+    DEFAULT_STAGE_CFG = {"current_stage": "prelim", "mode": "two_stage",
+                         "status": "open", "final_top_n": 8}
+
+    def get_stage_cfg(self, folder_name: str, kata_key: str) -> dict:
+        cfg = dict(self.DEFAULT_STAGE_CFG)
+        disc = self.get_discipline(folder_name, kata_key)
+        if disc is not None and isinstance(disc.stage_cfg, dict):
+            cfg.update(disc.stage_cfg)
+        return cfg
+
+    def set_stage_cfg(self, folder_name: str, kata_key: str, patch: dict) -> dict:
+        disc = self.get_or_create_discipline(folder_name, kata_key)
+        cfg = dict(self.DEFAULT_STAGE_CFG)
+        if isinstance(disc.stage_cfg, dict):
+            cfg.update(disc.stage_cfg)
+        cfg.update(patch or {})
+        disc.stage_cfg = cfg
+        db.session.commit()
+        return cfg
+
+    def move_pairs_to_final(self, folder_name: str, kata_key: str,
+                            top_n: int | None = None) -> int:
+        """Прежний open_final (п.4): TOP-N пар предварительного этапа по итогам
+        переносятся в финал; номера пересортировываются 1..N."""
+        disc = self.get_discipline(folder_name, kata_key)
+        if disc is None:
+            return 0
+        board = self.build_leaderboard(folder_name, kata_key, stage="qual")
+        n = int(top_n or (disc.stage_cfg or {}).get("final_top_n", 8) or 8)
+        chosen = [r for r in board if r.get("pair_number")][:n]
+        old_ids = [s.id for s in JudgeScore.query.filter_by(
+            discipline_id=disc.id, stage="final").all()]
+        if old_ids:
+            ScoreItem.query.filter(ScoreItem.score_id.in_(old_ids)).delete(
+                synchronize_session=False)
+        JudgeScore.query.filter_by(discipline_id=disc.id,
+                                   stage="final").delete(synchronize_session=False)
+        DisciplinePair.query.filter_by(discipline_id=disc.id,
+                                       stage="final").delete(
+            synchronize_session=False)
+        db.session.flush()
+        for num, row in enumerate(chosen, start=1):
+            db.session.add(DisciplinePair(
+                discipline_id=disc.id, stage="final", pair_number=num,
+                tori_id=(row.get("tori") or {}).get("id"),
+                uke_id=(row.get("uke") or {}).get("id"),
+                start_order=row.get("start_order"),
+                frozen_tori=row.get("frozen_tori"),
+                frozen_uke=row.get("frozen_uke")))
+        disc.final_source_stage = "qual"
+        db.session.commit()
+        return len(chosen)
+
+    def _purge_discipline_children(self, disc_id: int) -> None:
+        score_ids = [s.id for s in JudgeScore.query.filter_by(
+            discipline_id=disc_id).all()]
+        if score_ids:
+            ScoreItem.query.filter(ScoreItem.score_id.in_(score_ids)).delete(
+                synchronize_session=False)
+        JudgeScore.query.filter_by(discipline_id=disc_id).delete(
+            synchronize_session=False)
+        JudgeListEntry.query.filter_by(discipline_id=disc_id).delete(
+            synchronize_session=False)
+        DisciplinePair.query.filter_by(discipline_id=disc_id).delete(
+            synchronize_session=False)
+        db.session.flush()
+
+    def delete_discipline(self, folder_name: str, kata_key: str) -> bool:
+        disc = self.get_discipline(folder_name, kata_key)
+        if disc is None:
+            return False
+        self._purge_discipline_children(disc.id)
+        db.session.delete(disc)
+        db.session.commit()
+        return True
+
+    def delete_competition(self, folder_name: str) -> bool:
+        comp = Competition.query.filter_by(folder_name=folder_name).first()
+        if comp is None:
+            return False
+        for disc in list(comp.disciplines):
+            self._purge_discipline_children(disc.id)
+        CompetitionMeta.query.filter_by(competition_id=comp.id).delete(
+            synchronize_session=False)
+        db.session.delete(comp)
+        db.session.commit()
+        return True
+
+    def clear_participants(self) -> int:
+        """Прежняя админ-кнопка «Очистить участников» (реестр целиком)."""
+        DisciplinePair.query.update({DisciplinePair.tori_id: None},
+                                    synchronize_session=False)
+        DisciplinePair.query.update({DisciplinePair.uke_id: None},
+                                    synchronize_session=False)
+        DisciplinePair.query.update({DisciplinePair.frozen_tori: None},
+                                    synchronize_session=False)
+        DisciplinePair.query.update({DisciplinePair.frozen_uke: None},
+                                    synchronize_session=False)
+        n = Participant.query.count()
+        db.session.execute(Participant.__table__.delete())
+        db.session.commit()
+        return n
+
+    def clear_judges(self) -> int:
+        """Прежняя админ-кнопка «Очистить судей»: чистим коллегии, оценки и
+        реестр судей (FK SQLite cascade не гарантирован — удаляем явно)."""
+        JudgeListEntry.query.delete(synchronize_session=False)
+        ScoreItem.query.delete(synchronize_session=False)
+        JudgeScore.query.delete(synchronize_session=False)
+        n = Judge.query.count()
+        db.session.execute(Judge.__table__.delete())
+        db.session.commit()
+        return n
+
     def save_pairs(self, discipline_id: int, stage: str,
                    pairs: list[dict]) -> None:
         """Diff-upsert пар. Быстрый поиск участников по индексу в памяти
@@ -216,6 +337,15 @@ class DBService:
                 pname = (item.get(f"{role}_name") or "").strip()
                 pyear = item.get(f"{role}_birth_year")
                 year = int(pyear) if pyear not in (None, "", 0, "0") else None
+                # дополнительные поля формы регистрации (разряд/кю/СШ/тренер)
+                extras = {}
+                for field, key in (("rank", f"{role}_rank"),
+                                   ("kyu", f"{role}_kyu"),
+                                   ("school", f"{role}_sports_school"),
+                                   ("coach", f"{role}_coach")):
+                    v = item.get(key)
+                    if isinstance(v, str) and v.strip():
+                        extras[field] = v.strip()
                 pid: int | None = None
                 if pname:
                     found = index.get((pname.lower(), year))
@@ -225,8 +355,19 @@ class DBService:
                             found = cands[0]
                     if found is not None:
                         pid = found.id
+                        upd = {k: v for k, v in (
+                            ("rank", extras.get("rank")),
+                            ("kyu", extras.get("kyu")),
+                            ("sports_school", extras.get("school")),
+                            ("coach", extras.get("coach"))) if v}
+                        if upd:
+                            self.update_participant(found.id, **upd)
                     else:
                         new_p = Participant(name=pname, birth_year=year,
+                                            rank=extras.get("rank") or None,
+                                            kyu=extras.get("kyu") or None,
+                                            sports_school=extras.get("school") or None,
+                                            coach=extras.get("coach") or None,
                                             name_norm=normalize_name(pname))
                         db.session.add(new_p)
                         db.session.flush()
@@ -275,6 +416,8 @@ class DBService:
                 "pair_number": pr.pair_number,
                 "start_order": pr.start_order,
                 "tori": tori, "uke": uke,
+                "tori_name": tori.get("name", ""),
+                "uke_name": uke.get("name", ""),
                 "names": f"{tori.get('name', '')} / {uke.get('name', '')}",
             })
         return rows
@@ -288,18 +431,26 @@ class DBService:
         existing = {e.judge_id: e for e in JudgeListEntry.query.filter_by(
             discipline_id=discipline_id, stage=stage).all()}
         keep: set[int] = set()
+        used_pos: set[int] = set()
         for pos, item in enumerate(judges, start=1):
             name = (item.get("name") or "").strip()
             if not name:
                 continue
             j = self.upsert_judge(name, category=item.get("category"))
+            try:
+                p = int(item.get("position") or 0) or pos
+            except (TypeError, ValueError):
+                p = pos
+            while p in used_pos:
+                p += 1
+            used_pos.add(p)
             entry = existing.get(j.id)
             if entry is None:
                 entry = JudgeListEntry(discipline_id=discipline_id, stage=stage,
-                                       judge_id=j.id, position=pos)
+                                       judge_id=j.id, position=p)
                 db.session.add(entry)
             else:
-                entry.position = pos
+                entry.position = p
             keep.add(j.id)
         for jid, entry in existing.items():
             if jid not in keep:
@@ -322,12 +473,27 @@ class DBService:
             d = e.judge.to_dict()          # живые данные реестра (п.6)
             d["position"] = e.position
             out.append(d)
+        if not out:
+            # судейская бригада ещё не записана в список — берём судей,
+            # которые уже оценивали на этом этапе (прежнее поведение UI),
+            # чтобы судья мог продолжить работу после перезагрузки страницы.
+            seen: set = set()
+            for s in (JudgeScore.query
+                      .filter_by(discipline_id=disc.id, stage=stage)
+                      .order_by(JudgeScore.position, JudgeScore.id).all()):
+                if s.judge_id in seen:
+                    continue
+                seen.add(s.judge_id)
+                d = s.judge.to_dict()
+                d["position"] = s.position or (len(out) + 1)
+                out.append(d)
         return out
 
     # ---------- Оценки (п.7, п.9) ----------
 
     def save_judge_score(self, folder_name: str, kata_key: str, stage: str,
-                         judge_name: str, pair_number: int, raw: dict) -> float:
+                         judge_name: str, pair_number: int, raw: dict,
+                         position: int | None = None) -> float:
         """Сохранение/обновление протокола судьи (upsert по уникальному
         индексу). Пересчёт итога и score_items. После коммита вызывающий
         код рассылает socketio-событие — табло на других компах
@@ -344,6 +510,8 @@ class DBService:
                                pair_number=pair_number)
             db.session.add(score)
             db.session.flush()
+        if position is not None:
+            score.position = int(position)
         score.raw_json = raw
         score.total = total
         ScoreItem.query.filter_by(score_id=score.id).delete()
@@ -354,6 +522,129 @@ class DBService:
                 computed_score=t.score))
         db.session.commit()
         return total
+
+    @staticmethod
+    def canonical_raw_from_details(details: object, tech_names: list[str]) -> dict:
+        """Конвертация прежнего формата судейской формы
+        {техника: {m1,m2,med,big,c_plus,c_minus,forgotten}} (dict или список
+        по индексам) в канон scoring.protocol_from_raw:
+        {"techniques": [{penalty, forgotten, not_performed}]}.
+
+        Правила old == new: штраф = m1+m2+med+big+c_minus-c_plus (пол. коррекция
+        уменьшает штраф), забытая => 0 и итог/2."""
+        out: list[dict] = []
+        by_name: dict = {}
+        if isinstance(details, dict):
+            by_name = details
+        elif isinstance(details, list):
+            by_name = {t: (details[i] if i < len(details) else {})
+                       for i, t in enumerate(tech_names)}
+        for t in tech_names:
+            d = by_name.get(t) or {}
+            try:
+                penalty = (float(d.get("m1", 0) or 0) + float(d.get("m2", 0) or 0)
+                           + float(d.get("med", 0) or 0) + float(d.get("big", 0) or 0)
+                           + float(d.get("c_minus", 0) or 0) - float(d.get("c_plus", 0) or 0))
+            except (TypeError, ValueError):
+                penalty = 0.0
+            out.append({"penalty": round(max(0.0, penalty), 2),
+                        "forgotten": bool(d.get("forgotten")),
+                        "not_performed": bool(d.get("not_performed"))})
+        return {"techniques": out}
+
+    def save_judge_action(self, folder_name: str, kata_key: str, stage: str,
+                          judge_name: str, pair_number: int,
+                          details: object, position: int | None = None) -> float:
+        """Прежний поток judge_form: детали по именам техник. Храним raw как
+        {'details': ...} для отдачи фронту + канон 'techniques' для расчёта."""
+        from technics import DISCIPLINE_ROWS_BY_KEY, _disc_key
+
+        disc = self.get_or_create_discipline(folder_name, kata_key)
+        techs = DISCIPLINE_ROWS_BY_KEY.get(_disc_key(kata_key), [])
+        techs = techs[: disc.techniques_count]
+        if isinstance(details, list):
+            # прежний judge_form шлёт массив состояний по индексам техник;
+            # нормализуем в dict {имя техники: state} для round-trip
+            details = {t: (details[i] if i < len(details) else {})
+                       for i, t in enumerate(techs)}
+        elif isinstance(details, dict) and "techniques" in details:
+            # формат app.py--API: {"techniques": [...]} -> массив состояний
+            tech_list = details.get("techniques") or []
+            details = {t: (tech_list[i] if i < len(tech_list) else {})
+                       for i, t in enumerate(techs)}
+        raw = {"details": details,
+               **self.canonical_raw_from_details(details, techs)}
+        if position is None and isinstance(details, dict):
+            try:
+                position = int(details.get("position") or 0) or None
+            except (TypeError, ValueError):
+                position = None
+        return self.save_judge_score(folder_name, kata_key, stage,
+                                     judge_name, pair_number, raw,
+                                     position=position)
+
+    def get_judge_pair_raw(self, folder_name: str, kata_key: str, stage: str,
+                           judge_name: str, pair_number: int) -> dict | None:
+        """Прежний get-judge-scores: сырые данные сохранённого протокола судьи."""
+        disc = self.get_discipline(folder_name, kata_key)
+        if disc is None:
+            return None
+        j = Judge.query.filter_by(name=judge_name.strip()).first()
+        if j is None:
+            return None
+        s = JudgeScore.query.filter_by(discipline_id=disc.id, stage=stage,
+                                       judge_id=j.id,
+                                       pair_number=pair_number).first()
+        return s.raw_json if s else None
+
+    def list_competitions(self) -> list[dict]:
+        out = []
+        for comp in Competition.query.order_by(Competition.created_at.desc()).all():
+            meta = CompetitionMeta.query.filter_by(competition_id=comp.id).first()
+            out.append({
+                "folder": comp.folder_name,
+                "name": (meta.title if meta and meta.title else comp.folder_name),
+                "status": comp.status,
+                "created": comp.created_at.isoformat() if comp.created_at else "",
+                "disciplines": len(comp.disciplines),
+            })
+        return out
+
+    def competition_ui_context(self, folder_name: str) -> dict:
+        """Данные для прежних страниц админки (edit/dashboard) напрямую из БД."""
+        comp = Competition.query.filter_by(folder_name=folder_name).first()
+        if comp is None:
+            return {}
+        meta = CompetitionMeta.query.filter_by(competition_id=comp.id).first()
+        discs = []
+        for d in comp.disciplines:
+            cfg = dict(self.DEFAULT_STAGE_CFG)
+            if isinstance(d.stage_cfg, dict):
+                cfg.update(d.stage_cfg)
+            counts = {st: DisciplinePair.query.filter_by(
+                discipline_id=d.id, stage=st).count() for st in ("qual", "final")}
+            scored = db.session.query(JudgeScore.pair_number).filter(
+                JudgeScore.discipline_id == d.id,
+                JudgeScore.stage == "final",
+                JudgeScore.total.isnot(None)).distinct().count()
+            discs.append({
+                "key": d.kata_key,
+                "name": d.display_name or d.kata_key,
+                "stage": cfg,
+                "pair_count": counts["qual"] + counts["final"],
+                "pairs_registered": counts["final"],
+                "final_with_total": scored,
+            })
+        return {
+            "config": {
+                "name": (meta.title if meta and meta.title else comp.folder_name),
+                "status": comp.status,
+                "created": comp.created_at.isoformat() if comp.created_at else "",
+                "main_tablo_discipline": comp.main_tablo_discipline,
+                "banner": comp.banner,
+            },
+            "disciplines": discs,
+        }
 
     def get_pair_totals(self, folder_name: str, kata_key: str,
                         stage: str = "qual") -> dict[int, float]:

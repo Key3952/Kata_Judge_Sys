@@ -113,6 +113,10 @@ class Competition(db.Model):
     id: int = db.Column(db.Integer, primary_key=True)
     folder_name: str = db.Column(db.String(200), unique=True, nullable=False)
     status: str = db.Column(db.String(20), default=STATUS_ACTIVE)
+    # прежнее поле config.json: дисциплина, показываемая на главном табло
+    main_tablo_discipline: str | None = db.Column(db.String(50))
+    # прежний баннер соревнования (путь относительно папки competitions/)
+    banner: str | None = db.Column(db.String(300))
     created_at = db.Column(db.DateTime, default=utcnow)
     disciplines = db.relationship(
         "Discipline", backref="competition", cascade="all, delete-orphan"
@@ -150,6 +154,10 @@ class Discipline(db.Model):
     display_name: str | None = db.Column(db.String(200))
     # п.9: количество оцениваемых техник (по умолчанию 10, диапазон 5..10)
     techniques_count: int = db.Column(db.Integer, default=10, nullable=False)
+    # этапность прежнего UI: {current_stage: prelim|final, mode, status, final_top_n}
+    stage_cfg = db.Column(SafeUnicodeJSON)
+    # этап, из которого TOP-N переведён в финал (для «сразу финал» = текущий)
+    final_source_stage: str | None = db.Column(db.String(10))
     __table_args__ = (
         UniqueConstraint("competition_id", "kata_key", name="uq_disc_comp_kata"),
     )
@@ -175,6 +183,9 @@ class DisciplinePair(db.Model):
     # Снимок ФИО/года: замораживается при переходе соревнования в finished
     tori_snapshot = db.Column(SafeUnicodeJSON)
     uke_snapshot = db.Column(SafeUnicodeJSON)
+    # Прямые строки регистрации (если участника нет в реестре)
+    frozen_tori = db.Column(SafeUnicodeJSON)
+    frozen_uke = db.Column(SafeUnicodeJSON)
 
     tori = db.relationship("Participant", foreign_keys=[tori_id])
     uke = db.relationship("Participant", foreign_keys=[uke_id])
@@ -198,7 +209,22 @@ class DisciplinePair(db.Model):
             return dict(self.uke_snapshot)
         if self.uke:
             return self.uke.to_dict()
-        return dict(self.uke_snapshot or {"name": ""})
+        return dict(self.uke_snapshot or self.frozen_uke or {"name": ""})
+
+    def as_ui_pair(self, stage_label: str = "") -> dict:
+        """Единый формат пары для всех переписанных шаблонов."""
+        tori, uke = self.effective_tori(False), self.effective_uke(False)
+        return {
+            "pair_number": self.pair_number,
+            "stage": self.stage,
+            "stage_label": stage_label,
+            "start_order": self.start_order,
+            "tori_name": tori.get("name", ""),
+            "uke_name": uke.get("name", ""),
+            "tori_year": tori.get("birth_year"),
+            "uke_year": uke.get("birth_year"),
+            "names": f"{tori.get('name', '')} / {uke.get('name', '')}",
+        }
 
 
 class JudgeListEntry(db.Model):
@@ -234,6 +260,7 @@ class JudgeScore(db.Model):
     stage: str = db.Column(db.String(10), default="qual", nullable=False)
     judge_id: int = db.Column(db.ForeignKey("judge.id"), nullable=False)
     pair_number: int = db.Column(db.Integer, nullable=False)
+    position: int | None = db.Column(db.Integer)       # место судьи (для табло)
     total: float | None = db.Column(db.Float)          # итог судьи по паре
     raw_json = db.Column(SafeUnicodeJSON)              # сырые данные формы
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
